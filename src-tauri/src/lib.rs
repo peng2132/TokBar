@@ -456,7 +456,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(
@@ -511,6 +511,14 @@ pub fn run() {
             get_blocks,
             get_sources
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // macOS: clicking the Dock icon after the red close button hid the
+    // main window brings it back (fires only on macOS).
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Reopen { .. } = event {
+            show_main_window(handle.clone());
+        }
+    });
 }

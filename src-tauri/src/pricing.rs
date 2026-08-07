@@ -141,6 +141,10 @@ const BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
     // https://platform.kimi.ai/docs/pricing/chat-k26
     ("kimi-for-coding", rates(9.5e-7, 4e-6, Some(1.1875e-6), Some(1.6e-7))),
     ("kimi-k2.6", rates(9.5e-7, 4e-6, Some(1.1875e-6), Some(1.6e-7))),
+    // Kimi Code CLI logs "kimi-code/k3" in usage.record events. K3 list
+    // price: $3/M input, $15/M output, $0.30/M cache-hit input; cache
+    // write defaults to 1.25x input (ccusage behavior).
+    ("kimi-code/k3", rates(3e-6, 1.5e-5, None, Some(3e-7))),
     // Z.ai GLM-5.1 list price ($1.40 / $4.40 per 1M).
     ("glm-5.1", rates(1.4e-6, 4.4e-6, None, None)),
     // DeepSeek V4 (api-docs.deepseek.com/quick_start/pricing); cache

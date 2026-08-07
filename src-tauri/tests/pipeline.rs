@@ -89,6 +89,7 @@ fn pricing_covers_provider_switcher_models() {
     // (logged model name, expected input $/token)
     let cases = [
         ("kimi-k2.6", 9.5e-7),
+        ("kimi-code/k3", 3e-6),
         ("glm-5.1", 1.4e-6),
         ("deepseek-v4-pro", 4.35e-7),
         ("deepseek-v4-flash", 1.4e-7),

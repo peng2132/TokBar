@@ -39,7 +39,7 @@ TokBar 是一个跨平台桌面应用（macOS / Windows），用于分析你本�
 
 ## 功能特性
 
-- **多 Agent 支持**：Claude Code、Codex CLI、Kimi CLI 开箱即用，适配器架构可继续扩展
+- **多 Agent 支持**：Claude Code、Codex CLI、Kimi CLI / Kimi Code 开箱即用，适配器架构可继续扩展
 - **精确计费**：分级计价（>200k Token 阶梯价）、5 分钟/1 小时缓存写入计价、缓存读取折扣、fast/priority 档倍率
 - **菜单栏实时显示**：今日成本或 Token 数直接显示在时钟旁边
 - **5 小时计费块**：用量按整点对齐的 5 小时窗口分组，对应 Claude 的会话计费窗口，附实时燃烧率
@@ -60,7 +60,7 @@ TokBar 是一个跨平台桌面应用（macOS / Windows），用于分析你本�
 | OpenClaw | `$OPENCLAW_DIR` 或 `~/.openclaw` | JSONL |
 | GitHub Copilot CLI | `~/.copilot/otel/*.jsonl` | OTEL JSONL |
 | Qwen Code | `$QWEN_DATA_DIR` 或 `~/.qwen` 下 `projects/*/chats/` | JSONL |
-| Kimi CLI | `$KIMI_DATA_DIR` 或 `~/.kimi` 下 `sessions/**/wire.jsonl` | JSONL |
+| Kimi CLI / Kimi Code | `$KIMI_DATA_DIR` 或 `~/.kimi` 下 `sessions/**/wire.jsonl`；`~/.kimi-code` 下 `sessions/**/agents/*/wire.jsonl` | JSONL |
 | Amp | `$AMP_DATA_DIR` 或 `~/.local/share/amp` 下 `threads/` | JSON |
 | Droid (Factory) | `$DROID_SESSIONS_DIR` 或 `~/.factory/sessions` | JSON |
 | Goose | Goose 数据目录或 `$GOOSE_PATH_ROOT` 下的 `sessions.db` | SQLite |
@@ -111,7 +111,7 @@ src-tauri/src/
 ├── adapters/        # 各 agent 数据源适配器
 │   ├── claude.rs    # Claude Code JSONL 解析
 │   ├── codex.rs     # Codex CLI 解析
-│   └── kimi.rs      # Kimi CLI 解析
+│   └── kimi.rs      # Kimi CLI / Kimi Code 解析
 ├── pricing.rs       # LiteLLM 定价加载 + 模型匹配
 ├── cost.rs          # 分级成本计算
 ├── db.rs            # SQLite 增量缓存（mtime/size 跳过未变化文件）

@@ -13,7 +13,7 @@ use crate::pricing::{ModelPricing, PricingMap};
 use crate::types::UsageRecord;
 
 /// Bump when parsing/pricing semantics change so cached entries rebuild.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 pub fn open(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {

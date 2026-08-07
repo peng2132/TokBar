@@ -36,7 +36,7 @@ const AGENT_MODELS: Record<string, [string, number][]> = {
     ["claude-opus-4-5-20251101", 0.37],
   ],
   codex: [["gpt-5.2-codex", 1]],
-  kimi: [["kimi-k2.6", 1]],
+  kimi: [["kimi-code/k3", 1]],
 };
 const PROJECTS = [
   "TokBar",
@@ -312,7 +312,7 @@ function sources(): SourceInfo[] {
   const active: [string, string[], number][] = [
     ["claude-code", [`${home}.claude/projects`], 412],
     ["codex", [`${home}.codex/sessions`, `${home}.codex/archived_sessions`], 187],
-    ["kimi", [`${home}.kimi/sessions`], 36],
+    ["kimi", [`${home}.kimi/sessions`, `${home}.kimi-code/sessions`], 36],
   ];
   const inactive = [
     "gemini",

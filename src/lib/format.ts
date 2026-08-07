@@ -65,7 +65,7 @@ export function shortModelName(model: string): string {
 export const AGENT_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
   codex: "Codex CLI",
-  kimi: "Kimi CLI",
+  kimi: "Kimi Code",
   gemini: "Gemini CLI",
   opencode: "OpenCode",
   openclaw: "OpenClaw",

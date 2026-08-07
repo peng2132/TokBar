@@ -39,7 +39,7 @@ It is not a chat client. It is the dashboard for where your tokens and money go,
 
 ## Features
 
-- **Multi-agent**: Claude Code, Codex CLI and Kimi CLI out of the box, with an adapter architecture ready for more
+- **Multi-agent**: Claude Code, Codex CLI and Kimi CLI / Kimi Code out of the box, with an adapter architecture ready for more
 - **Accurate costs**: tiered pricing (>200k token brackets), 5m/1h cache-write pricing, cache-read discounts, fast/priority tier multipliers
 - **Menu bar ticker**: today's cost or token count right next to the clock
 - **5-hour billing blocks**: usage grouped into hour-aligned 5-hour windows matching Claude's session billing window, with live burn rate
@@ -60,7 +60,7 @@ It is not a chat client. It is the dashboard for where your tokens and money go,
 | OpenClaw | `$OPENCLAW_DIR` or `~/.openclaw` | JSONL |
 | GitHub Copilot CLI | `~/.copilot/otel/*.jsonl` | OTEL JSONL |
 | Qwen Code | `projects/*/chats/` under `$QWEN_DATA_DIR` or `~/.qwen` | JSONL |
-| Kimi CLI | `sessions/**/wire.jsonl` under `$KIMI_DATA_DIR` or `~/.kimi` | JSONL |
+| Kimi CLI / Kimi Code | `sessions/**/wire.jsonl` under `$KIMI_DATA_DIR` or `~/.kimi`; `sessions/**/agents/*/wire.jsonl` under `~/.kimi-code` | JSONL |
 | Amp | `threads/` under `$AMP_DATA_DIR` or `~/.local/share/amp` | JSON |
 | Droid (Factory) | `$DROID_SESSIONS_DIR` or `~/.factory/sessions` | JSON |
 | Goose | `sessions.db` in the Goose data dir or `$GOOSE_PATH_ROOT` | SQLite |
@@ -111,7 +111,7 @@ src-tauri/src/
 ├── adapters/        # one adapter per agent data source
 │   ├── claude.rs    # Claude Code JSONL parsing
 │   ├── codex.rs     # Codex CLI parsing
-│   └── kimi.rs      # Kimi CLI parsing
+│   └── kimi.rs      # Kimi CLI / Kimi Code parsing
 ├── pricing.rs       # LiteLLM pricing + model matching
 ├── cost.rs          # tiered cost calculation
 ├── db.rs            # SQLite incremental cache (skips unchanged files)

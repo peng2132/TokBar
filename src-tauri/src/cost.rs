@@ -1,4 +1,4 @@
-use crate::pricing::{ModelPricing, TIER_THRESHOLD};
+use crate::pricing::ModelPricing;
 use crate::types::UsageRecord;
 
 /// Cost mode semantics, identical to ccusage:
@@ -20,59 +20,85 @@ impl CostMode {
             _ => Self::Auto,
         }
     }
-}
 
-/// Tiered (long-context) pricing: first 200k tokens at base rate,
-/// the remainder at the above-200k rate when one exists.
-fn tiered_cost(tokens: u64, base: f64, above: Option<f64>) -> f64 {
-    if tokens == 0 {
-        return 0.0;
-    }
-    if let Some(above) = above {
-        if tokens > TIER_THRESHOLD {
-            return TIER_THRESHOLD as f64 * base + (tokens - TIER_THRESHOLD) as f64 * above;
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Calculate => "calculate",
+            Self::Display => "display",
         }
     }
-    tokens as f64 * base
 }
 
-/// Calculate cost from token counts with pricing already resolved (the
-/// scanner memoizes `PricingMap::resolve` per distinct model string).
-/// 1-hour cache creation is billed at 2x the input rate (ccusage
-/// cost.rs behavior).
+/// Token counts of one request, as stored per entry.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokenCounts {
+    pub input: u64,
+    pub output: u64,
+    pub cache_write_5m: u64,
+    pub cache_write_1h: u64,
+    pub cache_read: u64,
+}
+
+impl From<&UsageRecord> for TokenCounts {
+    fn from(r: &UsageRecord) -> Self {
+        Self {
+            input: r.input_tokens,
+            output: r.output_tokens,
+            cache_write_5m: r.cache_creation_5m,
+            cache_write_1h: r.cache_creation_1h,
+            cache_read: r.cache_read_tokens,
+        }
+    }
+}
+
+/// Calculate cost from token counts with pricing already resolved for the
+/// request's model and time. Long-context pricing applies to the whole
+/// request once its prompt (input + cache writes + cache reads) crosses
+/// the model's tier threshold, as Anthropic and OpenAI bill it.
+pub fn calculate_cost(t: TokenCounts, p: &ModelPricing) -> f64 {
+    let prompt = t.input + t.cache_write_5m + t.cache_write_1h + t.cache_read;
+    let r = p.effective(prompt);
+    t.input as f64 * r.input
+        + t.output as f64 * r.output
+        + t.cache_write_5m as f64 * r.cache_write_5m
+        + t.cache_write_1h as f64 * r.cache_write_1h
+        + t.cache_read as f64 * r.cache_read
+}
+
 pub fn calculate_cost_with(record: &UsageRecord, p: &ModelPricing) -> f64 {
-    cost_from_tokens(record, p)
+    calculate_cost(record.into(), p)
 }
 
-fn cost_from_tokens(r: &UsageRecord, p: &ModelPricing) -> f64 {
-    let cache_1h_base = p.input() * 2.0;
-    let cache_1h_above = p.input_cost_per_token_above_200k_tokens.map(|c| c * 2.0);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pricing::PricingMap;
 
-    tiered_cost(
-        r.input_tokens,
-        p.input(),
-        p.input_cost_per_token_above_200k_tokens,
-    ) + tiered_cost(
-        r.output_tokens,
-        p.output(),
-        p.output_cost_per_token_above_200k_tokens,
-    ) + tiered_cost(
-        r.cache_creation_5m,
-        p.cache_create(),
-        p.cache_creation_input_token_cost_above_200k_tokens,
-    ) + tiered_cost(r.cache_creation_1h, cache_1h_base, cache_1h_above)
-        + tiered_cost(
-            r.cache_read_tokens,
-            p.cache_read(),
-            p.cache_read_input_token_cost_above_200k_tokens,
-        )
-}
+    #[test]
+    fn whole_request_bills_at_long_context_rate() {
+        let map = PricingMap::load(None);
+        let p = map.resolve("gpt-6.1-sol").unwrap();
+        // 200K fresh + 100K cached = 300K prompt > 272K: every token at
+        // the long-context rates ($4 in, $0.20 cached, $15 out per 1M).
+        let t = TokenCounts {
+            input: 200_000,
+            output: 1_000,
+            cache_read: 100_000,
+            ..Default::default()
+        };
+        let want = 200_000.0 * 4e-6 + 100_000.0 * 2e-7 + 1_000.0 * 1.5e-5;
+        assert!((calculate_cost(t, &p) - want).abs() < 1e-9);
+    }
 
-/// Resolve the effective cost for a record under a given mode.
-pub fn resolve_cost(cost_usd: Option<f64>, calculated: f64, mode: CostMode) -> f64 {
-    match mode {
-        CostMode::Auto => cost_usd.unwrap_or(calculated),
-        CostMode::Calculate => calculated,
-        CostMode::Display => cost_usd.unwrap_or(0.0),
+    #[test]
+    fn one_hour_cache_writes_bill_at_2x_input() {
+        let map = PricingMap::load(None);
+        let p = map.resolve("claude-opus-5-5").unwrap();
+        let t = TokenCounts {
+            cache_write_1h: 1_000_000,
+            ..Default::default()
+        };
+        assert!((calculate_cost(t, &p) - 8.0).abs() < 1e-9);
     }
 }

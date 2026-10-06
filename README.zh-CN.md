@@ -40,9 +40,9 @@ TokBar 是一个跨平台桌面应用（macOS / Windows），用于分析你本�
 ## 功能特性
 
 - **多 Agent 支持**：Claude Code、Codex CLI、Kimi CLI 开箱即用，适配器架构可继续扩展
-- **精确计费**：分级计价（>200k Token 阶梯价）、5 分钟/1 小时缓存写入计价、缓存读取折扣、fast/priority 档倍率
+- **精确计费**：长上下文计价（超过 200K/272K/512K 时整次请求按长上下文价，与厂商计费方式一致）、5 分钟/1 小时缓存写入计价、缓存读取折扣、fast/priority 档价格、按日期生效的官方调价、DeepSeek 错峰价；价格变化后已存储的费用会自动重算
 - **菜单栏实时显示**：今日成本或 Token 数直接显示在时钟旁边
-- **5 小时计费块**：用量按整点对齐的 5 小时窗口分组，对应 Claude 的会话计费窗口，附实时燃烧率
+- **5 小时计费块**：按 Agent 分别把用量分组到整点对齐的 5 小时窗口（对应 Claude、Codex 各自的用量窗口），附实时燃烧率
 - **趋势与分布**：按日/周/月、按 Agent、按模型、按 Token 类型的图表
 - **本地与隐私**：所有数据本地解析、本地存储（SQLite），不离开你的电脑
 - **深色/浅色主题**、多种主题色、中英文界面
@@ -85,10 +85,13 @@ TokBar 是一个跨平台桌面应用（macOS / Windows），用于分析你本�
 核心解析与计费逻辑移植自 [ccusage](https://github.com/ryoppippi/ccusage)（经过大量真实数据验证的实现）：
 
 - 完整的 `message.usage` Token schema，含 `cache_creation` 的 `ephemeral_5m/1h` 细分
-- 按 `messageId + requestId` 去重，冲突时保留 Token 更多的记录
-- LiteLLM 定价库（内嵌离线快照 + 可在线刷新），模型名三级匹配（精确 → 归一化 → 边界感知模糊匹配）
+- 按 `messageId + requestId` 去重，冲突时保留 Token 更多的记录；Codex 重复上报（累计值不变）的事件只计一次
+- LiteLLM 定价库（内嵌离线快照 + 每日在线刷新，GitHub 不可达时自动走 jsDelivr 镜像），模型名匹配优先采用厂商自己的价格而不是转售商；最新模型由内置官方价兜底
+- 价格按每次请求的日期生效（例如 GPT-5.6 在 7、8 月的降价），fast/priority 档使用厂商公布的价格，超长 prompt 整次请求按长上下文价计费
 - Cost Mode：`auto`（优先日志中的 costUSD）/ `calculate`（始终重算）/ `display`（只看 costUSD）
-- 每个模型的 Token 数与成本已与官方 ccusage CLI 对账，逐分钱一致
+- 设置 → 定价 显示价格来源，并列出没有已知价格（按 $0 计）的模型
+- Agent 清理旧日志后历史仍保留（Claude Code 默认删除 30 天前的会话记录）
+- 与 ccusage 的有意差异：长上下文按整次请求计价、Codex 重复事件去重、较新模型的 fast 档价格
 
 ## 开发
 
@@ -111,10 +114,11 @@ src-tauri/src/
 ├── adapters/        # 各 agent 数据源适配器
 │   ├── claude.rs    # Claude Code JSONL 解析
 │   ├── codex.rs     # Codex CLI 解析
+│   ├── jsonl.rs     # 流式、可断点续读的 JSONL 读取
 │   └── kimi.rs      # Kimi CLI 解析
-├── pricing.rs       # LiteLLM 定价加载 + 模型匹配
-├── cost.rs          # 分级成本计算
-├── db.rs            # SQLite 增量缓存（mtime/size 跳过未变化文件）
+├── pricing.rs       # LiteLLM 定价、内置/按日期生效的价格、模型匹配
+├── cost.rs          # 支持长上下文的成本计算
+├── db.rs            # SQLite 缓存：跳过未变化文件、只读追加部分、价格变化后重算
 ├── aggregate.rs     # daily/sessions/models/projects/blocks 聚合
 ├── types.rs         # 归一化 UsageRecord
 └── lib.rs           # Tauri commands

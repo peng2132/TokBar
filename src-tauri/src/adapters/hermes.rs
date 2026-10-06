@@ -15,12 +15,7 @@ pub const AGENT: &str = "hermes";
 fn db_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     if let Ok(raw) = std::env::var("HERMES_HOME") {
-        for part in raw.split(',') {
-            let part = part.trim();
-            if !part.is_empty() {
-                paths.push(PathBuf::from(part).join("state.db"));
-            }
-        }
+        paths.extend(util::split_env_paths(&raw).into_iter().map(|p| p.join("state.db")));
     } else if let Some(home) = dirs::home_dir() {
         paths.push(home.join(".hermes").join("state.db"));
     }
@@ -42,9 +37,7 @@ pub fn collect_files() -> Vec<PathBuf> {
 }
 
 pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
-    let Ok(conn) =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-    else {
+    let Some(conn) = util::open_readonly_db(path) else {
         return Vec::new();
     };
     let Ok(mut stmt) = conn.prepare(
@@ -59,7 +52,8 @@ pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
 
     // Columns may be INTEGER or REAL; read leniently.
     let lenient_u64 = |row: &rusqlite::Row, idx: usize| -> u64 {
-        row.get::<_, i64>(idx)
+        let n = row
+            .get::<_, i64>(idx)
             .ok()
             .filter(|n| *n >= 0)
             .map(|n| n as u64)
@@ -69,7 +63,8 @@ pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
                     .filter(|f| f.is_finite() && *f > 0.0)
                     .map(|f| f.trunc() as u64)
             })
-            .unwrap_or(0)
+            .unwrap_or(0);
+        util::clamp_tokens(n)
     };
 
     let Ok(rows) = stmt.query_map([], |row| {
@@ -124,4 +119,33 @@ pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
         });
     }
     records
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_sessions_through_a_read_only_connection() {
+        let root = util::test_dir("hermes");
+        let path = root.join("state.db");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE sessions (id TEXT, model TEXT, started_at REAL, input_tokens INTEGER,
+                output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                reasoning_tokens INTEGER, estimated_cost_usd REAL, actual_cost_usd REAL);
+             INSERT INTO sessions VALUES ('s1', ' gpt-5 ', 1767312000.5, 100, 40, 10, 5, 2, 0.1, 0.2);
+             INSERT INTO sessions VALUES ('s2', 'gpt-5', 1767312000, 1e30, 0, 0, 0, 0, NULL, NULL);",
+        )
+        .unwrap();
+        drop(db);
+        let records = parse_file(&path);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].model, "gpt-5");
+        assert_eq!(records[0].output_tokens, 42);
+        assert_eq!(records[0].cost_usd, Some(0.2));
+        // A garbage count is clamped instead of overflowing later sums.
+        assert_eq!(records[1].input_tokens, util::MAX_TOKENS);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

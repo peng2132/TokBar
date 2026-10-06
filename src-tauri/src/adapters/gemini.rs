@@ -66,6 +66,26 @@ fn parse_tokens(v: &Value) -> Option<Tokens> {
     (!t.is_zero()).then_some(t)
 }
 
+/// Split raw Gemini counts into (input without cache, cache read).
+///
+/// Gemini CLI writes `input` = promptTokenCount, which already includes
+/// the cached prompt tokens, and `total` = input + output + thoughts +
+/// tool. ccusage `normalize_session_input`: when that inclusive total
+/// matches exactly (and the exclusive one, which would add `cached` on
+/// top, does not), `cached` overlaps `input` and is subtracted. Aggregate
+/// `stats` blocks always overlap (ccusage `subtract_cached_overlap_tokens`).
+fn split_cached_input(t: &Tokens, always_subtract_cache: bool) -> (u64, u64) {
+    let inclusive_total = t.input + t.output + t.thoughts + t.tool;
+    let exclusive_total = inclusive_total + t.cached;
+    let direct_overlap =
+        t.cached > 0 && t.total == inclusive_total && t.total != exclusive_total;
+    if always_subtract_cache || direct_overlap {
+        (t.input.saturating_sub(t.cached.min(t.input)), t.cached)
+    } else {
+        (t.input, t.cached)
+    }
+}
+
 /// Build a usage record from raw token counts. `always_subtract_cache`
 /// matches ccusage: aggregate stats always treat `cached` as overlapping
 /// input; direct events only when the totals indicate the overlap.
@@ -77,23 +97,26 @@ fn build_record(
     ts: i64,
     dedup_key: Option<String>,
 ) -> Option<UsageRecord> {
-    let mut input = t.input;
-    let cache_read = t.cached;
-    let direct_overlap = t.cached > 0
-        && t.total == t.input + t.output + t.thoughts + t.tool
-        && t.total != t.input + t.output + t.thoughts + t.tool + t.cached;
-    if always_subtract_cache || !direct_overlap {
-        input = input.saturating_sub(t.cached.min(input));
-    }
+    let (input_without_cache, cache_read) = split_cached_input(&t, always_subtract_cache);
     // Tool tokens count as input; thoughts (reasoning) bill as output.
-    input += t.tool;
+    let input = input_without_cache + t.tool;
     let mut output = t.output + t.thoughts;
+    // ccusage `apply_total_token_fallback`: tokens the reported total
+    // covers beyond the known parts are billed as output (this also
+    // handles events that only carry a total).
+    let known = input + output + cache_read;
+    output += t.total.saturating_sub(known);
     if input == 0 && output == 0 && cache_read == 0 {
-        if t.total == 0 {
-            return None;
-        }
-        output = t.total;
+        return None;
     }
+    // Every row needs a stable key: fall back to the event content when
+    // the source has no message id.
+    let dedup_key = dedup_key.unwrap_or_else(|| {
+        format!(
+            "gemini:{session_id}:{ts}:{model}:{}:{}:{}:{}:{}:{}",
+            t.input, t.output, t.cached, t.thoughts, t.tool, t.total
+        )
+    });
     Some(UsageRecord {
         agent: AGENT.to_string(),
         project: "Gemini".to_string(),
@@ -106,7 +129,7 @@ fn build_record(
         cache_creation_1h: 0,
         cache_read_tokens: cache_read,
         cost_usd: None,
-        dedup_key,
+        dedup_key: Some(dedup_key),
     })
 }
 
@@ -171,8 +194,20 @@ fn parse_jsonl(content: &str, file_stem: &str, fallback_ts: i64) -> Vec<UsageRec
             let Some(rec) = build_record(tokens, false, &m, &sid, ts, dedup) else {
                 continue;
             };
-            match id.and_then(|i| by_id.insert(i, records.len())) {
-                Some(prev) => records[prev] = rec,
+            // Last event per id wins, in the slot of its first occurrence.
+            // (`HashMap::insert` here used to overwrite the stored slot
+            // with `records.len()` on a duplicate without pushing, so a
+            // third copy of an id indexed past the end and panicked.)
+            match id {
+                Some(i) => match by_id.entry(i) {
+                    std::collections::hash_map::Entry::Occupied(slot) => {
+                        records[*slot.get()] = rec;
+                    }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(records.len());
+                        records.push(rec);
+                    }
+                },
                 None => records.push(rec),
             }
         } else if let Some(stats) = value.get("stats").or_else(|| {
@@ -189,17 +224,20 @@ fn parse_jsonl(content: &str, file_stem: &str, fallback_ts: i64) -> Vec<UsageRec
 }
 
 /// Single-file JSON session: `messages` array, a bare direct event, or
-/// an aggregate `stats` object.
+/// an aggregate `stats` object, in that order of precedence. Like
+/// ccusage `parse_json_file`, a file that has `messages` (or is itself a
+/// direct event) returns early: its `stats` block summarizes the same
+/// calls and counting it too would double the session.
 fn parse_session_value(value: &Value, file_stem: &str, fallback_ts: i64) -> Vec<UsageRecord> {
     let session_id = util::get_str(value, &["sessionId", "session_id"])
         .map(str::to_string)
         .unwrap_or_else(|| file_stem.to_string());
     let session_ts = util::get_str(value, &["startTime", "lastUpdated"])
-        .and_then(crate::adapters::claude::parse_timestamp_ms)
+        .and_then(util::parse_rfc3339_ms)
         .unwrap_or(fallback_ts);
-    let mut records = Vec::new();
 
     if let Some(messages) = value.get("messages").and_then(Value::as_array) {
+        let mut records = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
             if msg.get("type").and_then(Value::as_str) != Some("gemini") {
                 continue;
@@ -218,23 +256,37 @@ fn parse_session_value(value: &Value, file_stem: &str, fallback_ts: i64) -> Vec<
                 .or_else(|| Some(format!("gemini:{session_id}:msg{i}")));
             records.extend(build_record(tokens, false, model, &session_id, ts, dedup));
         }
-    } else if value.get("type").and_then(Value::as_str) == Some("gemini") {
-        if let Some(tokens) = value.get("tokens").and_then(parse_tokens) {
-            let model = util::get_str(value, &["model"]).unwrap_or("unknown");
-            let dedup = util::get_str(value, &["id"])
-                .map(|id| format!("gemini:{session_id}:{id}"));
-            records.extend(build_record(
-                tokens, false, model, &session_id, session_ts, dedup,
-            ));
-        }
+        return records;
     }
-    if let Some(stats) = value
+    if value.get("type").and_then(Value::as_str) == Some("gemini") {
+        let Some(tokens) = value.get("tokens").and_then(parse_tokens) else {
+            return Vec::new();
+        };
+        let ts = value
+            .get("timestamp")
+            .or_else(|| value.get("created_at"))
+            .and_then(util::ts_from_value)
+            .unwrap_or(session_ts);
+        let model = util::get_str(value, &["model"]).unwrap_or("unknown");
+        let dedup = util::get_str(value, &["id"]).map(|id| format!("gemini:{session_id}:{id}"));
+        return build_record(tokens, false, model, &session_id, ts, dedup)
+            .into_iter()
+            .collect();
+    }
+    match value
         .get("stats")
         .or_else(|| value.get("result").and_then(|r| r.get("stats")))
     {
-        records.extend(parse_stats(stats, None, &session_id, session_ts));
+        Some(stats) => {
+            let ts = value
+                .get("timestamp")
+                .and_then(util::ts_from_value)
+                .unwrap_or(session_ts);
+            let model_hint = util::get_str(value, &["model"]);
+            parse_stats(stats, model_hint, &session_id, ts)
+        }
+        None => Vec::new(),
     }
-    records
 }
 
 /// Aggregate stats: per-model token blocks under `stats.models`, else a
@@ -263,4 +315,111 @@ fn parse_stats(
         records.extend(build_record(t, true, model, session_id, ts, Some(dedup)));
     }
     records
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn tokens(v: Value) -> Tokens {
+        parse_tokens(&v).expect("tokens")
+    }
+
+    #[test]
+    fn subtracts_cached_when_total_includes_it_in_input() {
+        // Gemini CLI shape: input = promptTokenCount (incl. cached),
+        // total = input + output + thoughts + tool.
+        let t = tokens(json!({"input": 100, "output": 20, "cached": 30, "thoughts": 5, "total": 125}));
+        let r = build_record(t, false, "gemini-2.5-pro", "s", 1, None).unwrap();
+        assert_eq!(r.input_tokens, 70);
+        assert_eq!(r.cache_read_tokens, 30);
+        assert_eq!(r.output_tokens, 25);
+        assert_eq!(r.total_tokens(), 125);
+    }
+
+    #[test]
+    fn keeps_input_when_cached_is_reported_separately() {
+        // Exclusive shape: total counts cached on top of input.
+        let t = tokens(json!({"input": 100, "output": 20, "cached": 30, "thoughts": 5, "total": 155}));
+        let r = build_record(t, false, "gemini-2.5-pro", "s", 1, None).unwrap();
+        assert_eq!(r.input_tokens, 100);
+        assert_eq!(r.cache_read_tokens, 30);
+        assert_eq!(r.output_tokens, 25);
+    }
+
+    #[test]
+    fn aggregate_stats_always_subtract_cached() {
+        let t = tokens(json!({"prompt": 100, "candidates": 20, "cached": 30}));
+        let r = build_record(t, true, "gemini-2.5-pro", "s", 1, Some("k".into())).unwrap();
+        assert_eq!(r.input_tokens, 70);
+        assert_eq!(r.cache_read_tokens, 30);
+    }
+
+    #[test]
+    fn total_only_events_bill_total_as_output_and_get_a_key() {
+        let t = tokens(json!({"total": 654}));
+        let r = build_record(t, false, "gemini-2.5-pro", "s", 7, None).unwrap();
+        assert_eq!(r.output_tokens, 654);
+        assert_eq!(r.input_tokens, 0);
+        assert!(r.dedup_key.is_some());
+    }
+
+    #[test]
+    fn json_messages_win_over_stats() {
+        let v = json!({
+            "sessionId": "sess",
+            "startTime": "2026-01-01T00:00:00Z",
+            "messages": [
+                {"type": "user", "id": "u1"},
+                {"type": "gemini", "id": "m1", "model": "gemini-2.5-pro",
+                 "tokens": {"input": 10, "output": 5, "total": 15}}
+            ],
+            "stats": {"models": {"gemini-2.5-pro": {"tokens": {"prompt": 10, "candidates": 5}}}}
+        });
+        let records = parse_session_value(&v, "stem", 0);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].dedup_key.as_deref(), Some("gemini:sess:m1"));
+        assert_eq!(records[0].input_tokens, 10);
+    }
+
+    #[test]
+    fn json_stats_used_when_no_messages() {
+        let v = json!({
+            "sessionId": "sess",
+            "stats": {"models": {"gemini-2.5-pro": {"tokens": {"prompt": 10, "candidates": 5, "cached": 4}}}}
+        });
+        let records = parse_session_value(&v, "stem", 42);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 6);
+        assert_eq!(records[0].cache_read_tokens, 4);
+    }
+
+    #[test]
+    fn jsonl_direct_events_without_id_get_content_keys() {
+        let content = [
+            r#"{"sessionId":"s1","model":"gemini-2.5-flash"}"#,
+            r#"{"type":"gemini","timestamp":"2026-01-01T00:00:00Z","tokens":{"input":10,"output":2,"total":12}}"#,
+            r#"{"type":"gemini","timestamp":"2026-01-01T00:01:00Z","tokens":{"input":11,"output":2,"total":13}}"#,
+        ]
+        .join("\n");
+        let records = parse_jsonl(&content, "stem", 0);
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|r| r.dedup_key.is_some()));
+        assert_ne!(records[0].dedup_key, records[1].dedup_key);
+        assert_eq!(records[0].model, "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn repeated_event_ids_keep_the_last_copy_without_panicking() {
+        let ev = |input: u64| {
+            format!(
+                r#"{{"type":"gemini","id":"m1","timestamp":"2026-01-01T00:00:00Z","model":"g","tokens":{{"input":{input},"output":1}}}}"#
+            )
+        };
+        let content = [ev(1), ev(2), ev(3), ev(4)].join("\n");
+        let records = parse_jsonl(&content, "stem", 0);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 4);
+    }
 }

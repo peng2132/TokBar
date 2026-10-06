@@ -26,6 +26,18 @@ dirs = "5"
 ureq = { version = "2", features = ["json"] }
 thiserror = "1"
 
+# Notch companion window: NSScreen safe-area detection + NSWindow level
+# tweaks. Versions match the ones already in tauri's dependency tree.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSResponder",
+    "NSScreen",
+    "NSWindow",
+] }
+objc2-foundation = "0.3"
+
 [profile.release]
 lto = true
 codegen-units = 1

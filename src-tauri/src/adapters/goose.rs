@@ -7,7 +7,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::adapters::claude::parse_timestamp_ms;
 use crate::adapters::util;
 use crate::types::UsageRecord;
 
@@ -50,30 +49,39 @@ fn parse_created_at(raw: &rusqlite::types::Value) -> Option<i64> {
     match raw {
         Sql::Integer(n) if *n > 0 => Some(util::smart_unit_ms(*n)),
         Sql::Real(f) if *f > 0.0 => Some(util::smart_unit_ms(*f as i64)),
-        Sql::Text(s) => {
-            let s = s.trim().to_string();
-            if let Some(ms) = parse_timestamp_ms(&s) {
-                return Some(ms);
-            }
-            if s.len() == 19 {
-                let normalized = format!("{}T{}Z", &s[..10], &s[11..]);
-                if let Some(ms) = parse_timestamp_ms(&normalized) {
-                    return Some(ms);
-                }
-            }
-            if s.len() == 10 {
-                return parse_timestamp_ms(&format!("{s}T00:00:00Z"));
-            }
-            None
-        }
+        Sql::Text(s) => parse_created_at_text(s),
         _ => None,
     }
 }
 
+/// Text `created_at`: an integer string, RFC 3339, or SQLite's
+/// "YYYY-MM-DD HH:MM:SS" / "YYYY-MM-DD" (taken as UTC).
+///
+/// Slicing goes through `str::get`, which returns `None` instead of
+/// panicking when an offset is not a char boundary: a 19-byte string of
+/// multi-byte characters must not crash the scan.
+fn parse_created_at_text(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<i64>() {
+        return (n > 0).then(|| util::smart_unit_ms(n));
+    }
+    if let Some(ms) = util::parse_rfc3339_ms(s) {
+        return Some(ms);
+    }
+    let bytes = s.as_bytes();
+    let date_shape = bytes.len() >= 10 && bytes[4] == b'-' && bytes[7] == b'-';
+    if date_shape && bytes.len() == 19 && matches!(bytes[10], b' ' | b'T') {
+        let normalized = format!("{}T{}Z", s.get(..10)?, s.get(11..)?);
+        return util::parse_rfc3339_ms(&normalized);
+    }
+    if date_shape && bytes.len() == 10 {
+        return util::parse_rfc3339_ms(&format!("{s}T00:00:00Z"));
+    }
+    None
+}
+
 pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
-    let Ok(conn) =
-        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-    else {
+    let Some(conn) = util::open_readonly_db(path) else {
         return Vec::new();
     };
     let Ok(mut stmt) = conn.prepare(
@@ -86,7 +94,7 @@ pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
         return Vec::new();
     };
 
-    let positive = |v: Option<i64>| v.filter(|n| *n > 0).map(|n| n as u64);
+    let positive = |v: Option<i64>| v.filter(|n| *n > 0).map(|n| util::clamp_tokens(n as u64));
     let Ok(rows) = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -153,4 +161,59 @@ pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
         });
     }
     records
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn created_at_text_formats() {
+        let expected = util::parse_rfc3339_ms("2026-01-02T03:04:05Z");
+        assert_eq!(parse_created_at_text("2026-01-02 03:04:05"), expected);
+        assert_eq!(parse_created_at_text("2026-01-02T03:04:05"), expected);
+        assert_eq!(parse_created_at_text(" 2026-01-02T03:04:05Z "), expected);
+        assert_eq!(
+            parse_created_at_text("2026-01-02"),
+            util::parse_rfc3339_ms("2026-01-02T00:00:00Z")
+        );
+        assert_eq!(parse_created_at_text("1767323045"), Some(1_767_323_045_000));
+    }
+
+    #[test]
+    fn non_ascii_created_at_does_not_panic() {
+        // 19 and 10 bytes of multi-byte characters: byte offsets 10/11 are
+        // inside a character, which used to panic on `&s[..10]`.
+        assert_eq!("日本語日本語x".len(), 19);
+        assert_eq!(parse_created_at_text("日本語日本語x"), None);
+        assert_eq!(parse_created_at_text("日本語x"), None);
+        assert_eq!(parse_created_at_text("éééé-éé-ééééééé"), None);
+        assert_eq!(parse_created_at_text(""), None);
+    }
+
+    #[test]
+    fn reads_sessions_read_only() {
+        let root = util::test_dir("goose");
+        let path = root.join("sessions.db");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE sessions (id TEXT, model_config_json TEXT, provider_name TEXT,
+                created_at TEXT, total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER,
+                accumulated_output_tokens INTEGER);
+             INSERT INTO sessions VALUES ('s1', '{\"model_name\":\"gpt-5\"}', 'openai',
+                '2026-01-02 03:04:05', 150, 100, 40, NULL, NULL, NULL);
+             INSERT INTO sessions VALUES ('s2', '{\"model_name\":\"gpt-5\"}', 'openai',
+                '日本語日本語x', 10, 5, 5, NULL, NULL, NULL);",
+        )
+        .unwrap();
+        drop(db);
+        let records = parse_file(&path);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 100);
+        // total - (input + output) bills as output.
+        assert_eq!(records[0].output_tokens, 50);
+        assert_eq!(records[0].dedup_key.as_deref(), Some("goose:s1"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -40,9 +40,9 @@ It is not a chat client. It is the dashboard for where your tokens and money go,
 ## Features
 
 - **Multi-agent**: Claude Code, Codex CLI and Kimi CLI out of the box, with an adapter architecture ready for more
-- **Accurate costs**: tiered pricing (>200k token brackets), 5m/1h cache-write pricing, cache-read discounts, fast/priority tier multipliers
+- **Accurate costs**: long-context pricing (the whole request above 200K/272K/512K, as vendors bill it), 5m/1h cache-write pricing, cache-read discounts, fast/priority tier rates, dated list-price changes, DeepSeek off-peak rates — and stored costs are re-priced automatically when prices change
 - **Menu bar ticker**: today's cost or token count right next to the clock
-- **5-hour billing blocks**: usage grouped into hour-aligned 5-hour windows matching Claude's session billing window, with live burn rate
+- **5-hour billing blocks**: each agent's usage grouped into hour-aligned 5-hour windows (Claude's and Codex's usage windows), with live burn rate
 - **Trends & breakdowns**: daily/weekly/monthly charts by agent, model, and token type
 - **Local & private**: everything is parsed and stored locally in SQLite; nothing leaves your machine
 - **Light & dark themes**, accent colors, and an English/中文 interface
@@ -85,10 +85,13 @@ Download the latest installer from [**Releases**](https://github.com/peng2132/To
 Parsing and billing logic is ported from [ccusage](https://github.com/ryoppippi/ccusage), an implementation validated against large amounts of real-world data:
 
 - Full `message.usage` token schema, including `cache_creation` `ephemeral_5m/1h` breakdowns
-- Deduplication by `messageId + requestId`, keeping the record with more tokens on conflict
-- LiteLLM pricing (embedded offline snapshot + online refresh) with three-level model-name matching
+- Deduplication by `messageId + requestId`, keeping the record with more tokens on conflict; Codex events re-emitted with unchanged totals count once
+- LiteLLM pricing (embedded offline snapshot + daily online refresh with a jsDelivr mirror for networks that can't reach GitHub) with model-name matching that prefers the vendor's own price over resellers; built-in official prices fill the gaps for brand-new models
+- Prices follow the date of each request (e.g. GPT-5.6's July/August price cuts), fast/priority usage uses the vendor's published priority rates, and long prompts bill the whole request at the long-context rate
 - Cost modes: `auto` (prefer logged costUSD) / `calculate` (always recompute) / `display` (logged costUSD only)
-- Per-model token counts and costs reconcile to the cent with the official ccusage CLI
+- Settings → Pricing shows where prices come from and lists any model without a known price (counted as $0)
+- History is kept when an agent prunes its old logs (Claude Code deletes transcripts after 30 days by default)
+- Where TokBar deliberately differs from ccusage: whole-request long-context pricing, the Codex duplicate-event fix, and fast-tier rates for newer models
 
 ## Development
 
@@ -111,10 +114,11 @@ src-tauri/src/
 ├── adapters/        # one adapter per agent data source
 │   ├── claude.rs    # Claude Code JSONL parsing
 │   ├── codex.rs     # Codex CLI parsing
+│   ├── jsonl.rs     # streaming, resumable JSONL reader
 │   └── kimi.rs      # Kimi CLI parsing
-├── pricing.rs       # LiteLLM pricing + model matching
-├── cost.rs          # tiered cost calculation
-├── db.rs            # SQLite incremental cache (skips unchanged files)
+├── pricing.rs       # LiteLLM pricing, built-in/dated prices, model matching
+├── cost.rs          # long-context-aware cost calculation
+├── db.rs            # SQLite cache: skips unchanged files, reads only appended bytes, re-prices on price changes
 ├── aggregate.rs     # daily/sessions/models/projects/blocks aggregation
 ├── types.rs         # normalized UsageRecord
 └── lib.rs           # Tauri commands

@@ -14,15 +14,12 @@ use crate::types::UsageRecord;
 
 pub const AGENT: &str = "codebuff";
 
+static NULL: Value = Value::Null;
+
 pub fn data_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Ok(raw) = std::env::var("CODEBUFF_DATA_DIR") {
-        for part in raw.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            let p = PathBuf::from(part);
+        for p in util::split_env_paths(&raw) {
             if p.file_name().is_some_and(|n| n == "projects") {
                 dirs.push(p);
             } else {
@@ -43,25 +40,15 @@ pub fn data_dirs() -> Vec<PathBuf> {
 pub fn collect_files() -> Vec<PathBuf> {
     let mut files = Vec::new();
     for root in data_dirs() {
-        collect_chat_files(&root, &mut files);
+        util::walk_files(
+            &root,
+            &|p| p.file_name().is_some_and(|n| n == "chat-messages.json"),
+            &mut files,
+        );
     }
     files.sort();
     files.dedup();
     files
-}
-
-fn collect_chat_files(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in read.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_chat_files(&path, files);
-        } else if path.file_name().is_some_and(|n| n == "chat-messages.json") {
-            files.push(path);
-        }
-    }
 }
 
 fn is_assistant(msg: &Value) -> bool {
@@ -92,20 +79,32 @@ fn parse_usage_object(v: &Value) -> Usage {
             .max()
             .unwrap_or(0)
     };
+    let input = pick(&["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]);
+    // Anthropic-shape cache reads are disjoint from input; OpenAI-shape
+    // `prompt_tokens_details.cached_tokens` is a *subset* of
+    // `prompt_tokens`, so when the cache count comes from there it is
+    // subtracted from input to avoid billing those tokens twice.
+    // Deviation from ccusage, which keeps input as reported.
+    let anthropic_cache_read = pick(&["cacheReadInputTokens", "cache_read_input_tokens"]);
+    let openai_cached = pick(&[
+        "promptTokensDetails.cachedTokens",
+        "prompt_tokens_details.cached_tokens",
+    ]);
+    let cache_read = anthropic_cache_read.max(openai_cached);
+    let input = if openai_cached > 0 && openai_cached >= anthropic_cache_read {
+        input - openai_cached.min(input)
+    } else {
+        input
+    };
     Usage {
-        input: pick(&["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]),
+        input,
         output: pick(&[
             "outputTokens",
             "output_tokens",
             "completionTokens",
             "completion_tokens",
         ]),
-        cache_read: pick(&[
-            "cacheReadInputTokens",
-            "cache_read_input_tokens",
-            "promptTokensDetails.cachedTokens",
-            "prompt_tokens_details.cached_tokens",
-        ]),
+        cache_read,
         cache_creation: pick(&[
             "cacheCreationInputTokens",
             "cache_creation_input_tokens",
@@ -161,12 +160,11 @@ fn run_state_usage(metadata: &Value) -> (Usage, Option<String>) {
 /// chat ids look like "2026-01-02T03-04-05.678Z": two dashes in the time
 /// part stand in for colons.
 fn ts_from_chat_id(chat_id: &str) -> Option<i64> {
-    if chat_id.len() < 20 || chat_id.as_bytes().get(10) != Some(&b'T') {
-        return None;
-    }
-    let (date, time) = chat_id.split_at(11);
-    let fixed = format!("{date}{}", time.replacen('-', ":", 2));
-    crate::adapters::claude::parse_timestamp_ms(&fixed)
+    // `split_once` keeps the split on a char boundary even for
+    // non-ASCII directory names (ccusage `parse_codebuff_chat_id_timestamp`).
+    let (date, time) = chat_id.split_once('T')?;
+    let fixed = format!("{date}T{}", time.replacen('-', ":", 2));
+    util::parse_rfc3339_ms(&fixed)
 }
 
 pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
@@ -204,13 +202,15 @@ pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
         if !is_assistant(msg) {
             continue;
         }
-        let metadata = msg.get("metadata").cloned().unwrap_or(Value::Null);
+        // Borrow instead of cloning: `metadata` can embed the whole run
+        // state (message history) and is only read here.
+        let metadata = msg.get("metadata").unwrap_or(&NULL);
         let direct = metadata.get("usage").map(parse_usage_object).unwrap_or_default();
         let nested = metadata
             .pointer("/codebuff/usage")
             .map(parse_usage_object)
             .unwrap_or_default();
-        let (deep, deep_model) = run_state_usage(&metadata);
+        let (deep, deep_model) = run_state_usage(metadata);
         let usage = merge(merge(direct, nested), deep);
 
         let input = usage.input;
@@ -228,7 +228,7 @@ pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
             .or_else(|| metadata.get("timestamp"))
             .and_then(util::ts_from_value)
             .unwrap_or(fallback_ts);
-        let model = util::get_str(&metadata, &["model"])
+        let model = util::get_str(metadata, &["model"])
             .map(str::to_string)
             .or_else(|| metadata.pointer("/codebuff/model").and_then(Value::as_str).map(str::to_string))
             .or(deep_model)
@@ -255,4 +255,48 @@ pub fn parse_file(path: &Path) -> Vec<UsageRecord> {
         });
     }
     records
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn openai_cached_tokens_are_subtracted_from_prompt() {
+        for usage in [
+            json!({"promptTokens": 1000, "completionTokens": 50,
+                   "promptTokensDetails": {"cachedTokens": 400}}),
+            json!({"prompt_tokens": 1000, "completion_tokens": 50,
+                   "prompt_tokens_details": {"cached_tokens": 400}}),
+        ] {
+            let u = parse_usage_object(&usage);
+            assert_eq!((u.input, u.output, u.cache_read), (600, 50, 400));
+        }
+    }
+
+    #[test]
+    fn anthropic_cache_reads_stay_disjoint_from_input() {
+        let u = parse_usage_object(&json!({
+            "inputTokens": 100, "outputTokens": 50,
+            "cacheReadInputTokens": 400, "cacheCreationInputTokens": 30
+        }));
+        assert_eq!((u.input, u.cache_read, u.cache_creation), (100, 400, 30));
+    }
+
+    #[test]
+    fn cached_above_prompt_does_not_underflow() {
+        let u = parse_usage_object(&json!({"promptTokens": 10, "promptTokensDetails": {"cachedTokens": 40}}));
+        assert_eq!((u.input, u.cache_read), (0, 40));
+    }
+
+    #[test]
+    fn chat_id_timestamps_and_non_ascii_ids() {
+        assert_eq!(
+            ts_from_chat_id("2026-01-02T03-04-05.678Z"),
+            util::parse_rfc3339_ms("2026-01-02T03:04:05.678Z")
+        );
+        assert_eq!(ts_from_chat_id("日本語のチャットT名前"), None);
+        assert_eq!(ts_from_chat_id("短い"), None);
+    }
 }

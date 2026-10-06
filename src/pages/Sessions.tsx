@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, Search } from "lucide-react";
+import { AlertTriangle, ChevronRight, Search } from "lucide-react";
 import {
   api,
   type ModelRow,
@@ -27,7 +27,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
+import { UnpricedBadge } from "@/components/UnpricedBadge";
+
+/** Per-session model rows, or "error" when that query failed. */
+type Detail = ModelRow[] | "error";
+
+const sessionKey = (s: SessionRow) => `${s.agent}:${s.sessionId}`;
 
 const AGENT_BADGE: Record<string, "warning" | "success" | "info"> = {
   "claude-code": "warning",
@@ -49,7 +56,42 @@ export function SessionsPage({
   const [search, setSearch] = useState("");
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [detail, setDetail] = useState<Record<string, ModelRow[]>>({});
+  const [detail, setDetail] = useState<Record<string, Detail>>({});
+
+  // Cached per-session model rows go stale when the data changes or the
+  // cost mode re-prices them; drop them (the open row refetches below).
+  useEffect(() => {
+    setDetail({});
+  }, [refreshKey, params.costMode]);
+
+  // Load the expanded session's model rows unless cached.
+  useEffect(() => {
+    if (!expanded || detail[expanded] !== undefined) return;
+    // Agent ids never contain ":", so the first one splits the key.
+    const sep = expanded.indexOf(":");
+    const agent = expanded.slice(0, sep);
+    const sessionId = expanded.slice(sep + 1);
+    let cancelled = false;
+    api
+      .getSessionModels(agent, sessionId, params.costMode)
+      .then((rows) => {
+        if (!cancelled) setDetail((d) => ({ ...d, [expanded]: rows }));
+      })
+      .catch((e) => {
+        console.error("session detail failed:", e);
+        if (!cancelled) setDetail((d) => ({ ...d, [expanded]: "error" }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, detail, params.costMode]);
+
+  const retryDetail = (key: string) =>
+    setDetail((d) => {
+      const next = { ...d };
+      delete next[key];
+      return next;
+    });
 
   useEffect(() => {
     let cancelled = false;
@@ -83,17 +125,8 @@ export function SessionsPage({
   }, [sessions, search, agentFilter]);
 
   const toggleExpand = (s: SessionRow) => {
-    const key = `${s.agent}:${s.sessionId}`;
-    if (expanded === key) {
-      setExpanded(null);
-      return;
-    }
-    setExpanded(key);
-    if (!detail[key]) {
-      api
-        .getSessionModels(s.agent, s.sessionId, params.costMode)
-        .then((rows) => setDetail((d) => ({ ...d, [key]: rows })));
-    }
+    const key = sessionKey(s);
+    setExpanded((cur) => (cur === key ? null : key));
   };
 
   if (error) {
@@ -169,7 +202,7 @@ export function SessionsPage({
           </TableHeader>
           <TableBody>
             {filtered.map((s) => {
-              const key = `${s.agent}:${s.sessionId}`;
+              const key = sessionKey(s);
               const isOpen = expanded === key;
               return (
                 <SessionRowGroup
@@ -178,6 +211,7 @@ export function SessionsPage({
                   isOpen={isOpen}
                   detail={detail[key]}
                   onToggle={() => toggleExpand(s)}
+                  onRetry={() => retryDetail(key)}
                 />
               );
             })}
@@ -198,11 +232,13 @@ function SessionRowGroup({
   isOpen,
   detail,
   onToggle,
+  onRetry,
 }: {
   session: SessionRow;
   isOpen: boolean;
-  detail?: ModelRow[];
+  detail?: Detail;
   onToggle: () => void;
+  onRetry: () => void;
 }) {
   const { t } = useI18n();
   return (
@@ -268,7 +304,22 @@ function SessionRowGroup({
       {isOpen && (
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={8} className="bg-muted/30 p-0">
-            {detail ? (
+            {detail === "error" ? (
+              <div className="flex items-center gap-3 px-10 py-3 text-xs text-muted-foreground">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                {t("common.loadFailed")}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRetry();
+                  }}
+                >
+                  {t("common.retry")}
+                </Button>
+              </div>
+            ) : detail ? (
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-muted-foreground">
@@ -299,7 +350,10 @@ function SessionRowGroup({
                   {detail.map((m) => (
                     <tr key={m.model} className="border-t border-border/50">
                       <td className="px-10 py-2 font-medium">
-                        {shortModelName(m.model)}
+                        <span className="flex items-center gap-1.5">
+                          <span title={m.model}>{shortModelName(m.model)}</span>
+                          {m.priced === false && <UnpricedBadge />}
+                        </span>
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">
                         {formatTokens(m.inputTokens)}

@@ -14,13 +14,14 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { DailyRow } from "@/lib/api";
+import type { DailyRow, ModelRow } from "@/lib/api";
 import {
   agentColor,
   agentLabel,
   CHART_PALETTE,
   formatCost,
   formatTokens,
+  modelDisplayNames,
 } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 
@@ -33,70 +34,71 @@ const TOOLTIP_STYLE = {
   fontSize: 12,
 };
 
+/** Bucket size of the rows a chart is given; always passed explicitly by
+ *  the caller (never guessed from the gaps between dates). */
+export type Granularity = "hour" | "day" | "week" | "month";
+
+/** Label shape per granularity: "HH:00", "YYYY-MM-DD" (weeks are keyed by
+ *  their Monday), "YYYY-MM". */
+const LABEL_FORMAT: Record<Granularity, RegExp> = {
+  hour: /^\d{2}:00$/,
+  day: /^\d{4}-\d{2}-\d{2}$/,
+  week: /^\d{4}-\d{2}-\d{2}$/,
+  month: /^\d{4}-\d{2}$/,
+};
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
 /**
  * Aggregation buckets only exist where there was usage; quiet hours/days
  * are absent, which breaks lines in the chart. Fill the timeline so every
  * bucket between the first and last is present (zeros for quiet periods).
  */
-function fillTimeline(labels: string[]): string[] {
+function fillTimeline(labels: string[], granularity: Granularity): string[] {
   if (labels.length === 0) return labels;
   const sorted = [...labels].sort();
+  // Labels that don't fit the declared granularity are drawn as they are
+  // rather than misread (e.g. dates parsed as hours).
+  if (!sorted.every((l) => LABEL_FORMAT[granularity].test(l))) return sorted;
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
-  // Hourly ("HH:00"): from midnight to the last active hour.
-  if (/^\d{2}:00$/.test(first)) {
+  const out: string[] = [];
+  if (granularity === "hour") {
+    // From midnight to the last active hour.
     const lastHour = parseInt(last, 10);
-    return Array.from(
-      { length: lastHour + 1 },
-      (_, h) => `${String(h).padStart(2, "0")}:00`,
-    );
-  }
-  // Monthly ("YYYY-MM").
-  if (/^\d{4}-\d{2}$/.test(first)) {
-    const out: string[] = [];
+    for (let h = 0; h <= lastHour; h++) out.push(`${pad2(h)}:00`);
+  } else if (granularity === "month") {
     let [y, m] = first.split("-").map(Number);
     while (out.length < 1200) {
-      const label = `${y}-${String(m).padStart(2, "0")}`;
+      const label = `${y}-${pad2(m)}`;
       out.push(label);
-      if (label === last) break;
+      if (label >= last) break;
       m += 1;
       if (m > 12) {
         m = 1;
         y += 1;
       }
     }
-    return out;
-  }
-  // Daily / weekly ("YYYY-MM-DD"): weekly buckets are 7 days apart.
-  if (/^\d{4}-\d{2}-\d{2}$/.test(first)) {
-    const DAY = 86_400_000;
-    const times = sorted.map((s) => new Date(`${s}T12:00:00`).getTime());
-    const weekly =
-      times.length > 1 &&
-      times.every(
-        (t, i) => i === 0 || Math.round((t - times[i - 1]) / DAY) % 7 === 0,
-      );
-    const step = (weekly ? 7 : 1) * DAY;
-    const out: string[] = [];
-    for (
-      let t = times[0];
-      t <= times[times.length - 1] && out.length < 5000;
-      t += step
-    ) {
-      const d = new Date(t);
-      out.push(
-        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
-      );
+  } else {
+    // Day / week: calendar steps (setDate), so DST days don't skew it.
+    const step = granularity === "week" ? 7 : 1;
+    const d = new Date(`${first}T00:00:00`);
+    while (out.length < 5000) {
+      const label = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      out.push(label);
+      if (label >= last) break;
+      d.setDate(d.getDate() + step);
     }
-    return out;
   }
-  return sorted;
+  // Never drop a real bucket that falls off the generated grid.
+  return [...new Set([...out, ...sorted])].sort();
 }
 
-/** Pivot daily (date, agent) rows into one row per date with per-agent keys. */
+/** Pivot (bucket, agent) rows into one row per bucket with per-agent keys. */
 export function pivotDailyByAgent(
   rows: DailyRow[],
   metric: "cost" | "totalTokens" | "requests",
+  granularity: Granularity,
 ): { data: Record<string, number | string>[]; agents: string[] } {
   const agents = [...new Set(rows.map((r) => r.agent))].sort();
   const byDate = new Map<string, Record<string, number | string>>();
@@ -105,7 +107,7 @@ export function pivotDailyByAgent(
     row[r.agent] = ((row[r.agent] as number) ?? 0) + r[metric];
     byDate.set(r.date, row);
   }
-  const data = fillTimeline([...byDate.keys()]).map((label) => {
+  const data = fillTimeline([...byDate.keys()], granularity).map((label) => {
     const row = byDate.get(label) ?? { date: label };
     for (const agent of agents) {
       row[agent] = (row[agent] as number) ?? 0;
@@ -120,8 +122,17 @@ function shortDate(d: string): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(5) : d;
 }
 
-export function CostTrendChart({ rows }: { rows: DailyRow[] }) {
-  const { data, agents } = useMemo(() => pivotDailyByAgent(rows, "cost"), [rows]);
+export function CostTrendChart({
+  rows,
+  granularity,
+}: {
+  rows: DailyRow[];
+  granularity: Granularity;
+}) {
+  const { data, agents } = useMemo(
+    () => pivotDailyByAgent(rows, "cost", granularity),
+    [rows, granularity],
+  );
   return (
     <ResponsiveContainer width="100%" height={280}>
       <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -140,12 +151,7 @@ export function CostTrendChart({ rows }: { rows: DailyRow[] }) {
                 {items.map((p) => (
                   <div
                     key={String(p.dataKey)}
-                    style={{
-                      color: agentColor(
-                        String(p.dataKey),
-                        agents.indexOf(String(p.dataKey)),
-                      ),
-                    }}
+                    style={{ color: agentColor(String(p.dataKey)) }}
                   >
                     {agentLabel(String(p.dataKey))} : {formatCost(Number(p.value))}
                   </div>
@@ -155,7 +161,7 @@ export function CostTrendChart({ rows }: { rows: DailyRow[] }) {
           }}
         />
         <Legend formatter={(v) => agentLabel(String(v))} />
-        {agents.map((agent, i) => (
+        {agents.map((agent) => (
           // Fill-only stacked bands: an agent's usage is its band
           // thickness. No per-series stroke or hover dot — a zero-usage
           // series would otherwise draw its line and dot on top of the
@@ -166,7 +172,7 @@ export function CostTrendChart({ rows }: { rows: DailyRow[] }) {
             dataKey={agent}
             stackId="cost"
             stroke="none"
-            fill={agentColor(agent, i)}
+            fill={agentColor(agent)}
             fillOpacity={0.45}
             activeDot={false}
           />
@@ -176,7 +182,13 @@ export function CostTrendChart({ rows }: { rows: DailyRow[] }) {
   );
 }
 
-export function TokenTrendChart({ rows }: { rows: DailyRow[] }) {
+export function TokenTrendChart({
+  rows,
+  granularity,
+}: {
+  rows: DailyRow[];
+  granularity: Granularity;
+}) {
   const { t } = useI18n();
   const data = useMemo(() => {
     const byDate = new Map<string, Record<string, number | string>>();
@@ -193,7 +205,7 @@ export function TokenTrendChart({ rows }: { rows: DailyRow[] }) {
       row.cacheCreate = (row.cacheCreate as number) + r.cacheCreationTokens;
       byDate.set(r.date, row);
     }
-    return fillTimeline([...byDate.keys()]).map(
+    return fillTimeline([...byDate.keys()], granularity).map(
       (label) =>
         byDate.get(label) ?? {
           date: label,
@@ -203,7 +215,7 @@ export function TokenTrendChart({ rows }: { rows: DailyRow[] }) {
           cacheCreate: 0,
         },
     );
-  }, [rows]);
+  }, [rows, granularity]);
 
   const series: { key: string; label: string; color: string }[] = [
     { key: "input", label: t("chart.input"), color: "var(--chart-2)" },
@@ -234,10 +246,30 @@ export function TokenTrendChart({ rows }: { rows: DailyRow[] }) {
   );
 }
 
-interface PieDatum {
+export interface PieDatum {
+  /** Stable identity (full model id, agent id): keys slices and colors,
+   *  so two entries that happen to share a display name never collide. */
+  key: string;
+  /** Display label. */
   name: string;
   value: number;
   color?: string;
+}
+
+/** Pie slices for the top `limit` models: keyed by the full model id,
+ *  labeled with short names that stay distinct when two ids collide. */
+export function modelPie(
+  models: ModelRow[],
+  metric: "cost" | "totalTokens",
+  limit: number,
+): PieDatum[] {
+  const top = models.slice(0, limit);
+  const names = modelDisplayNames(top.map((m) => m.model));
+  return top.map((m) => ({
+    key: m.model,
+    name: names.get(m.model) ?? m.model,
+    value: m[metric],
+  }));
 }
 
 export function DistributionPie({
@@ -247,18 +279,18 @@ export function DistributionPie({
   data: PieDatum[];
   valueFormatter: (v: number) => string;
 }) {
-  // Colors are keyed off the caller's (unsorted) order so the same name
+  // Colors are keyed off the caller's (unsorted) order so the same entry
   // gets the same color in every pie on the page; slices and the legend
   // are then drawn largest-first. The legend payload is explicit because
   // recharts does not follow the sorted data order on its own.
   const { sorted, colorOf } = useMemo(() => {
     const colors = new Map<string, string>();
     data.forEach((d, i) =>
-      colors.set(d.name, d.color ?? CHART_PALETTE[i % CHART_PALETTE.length]),
+      colors.set(d.key, d.color ?? CHART_PALETTE[i % CHART_PALETTE.length]),
     );
     return {
       sorted: [...data].sort((a, b) => b.value - a.value),
-      colorOf: (name: string) => colors.get(name) ?? CHART_PALETTE[0],
+      colorOf: (key: string) => colors.get(key) ?? CHART_PALETTE[0],
     };
   }, [data]);
   return (
@@ -274,7 +306,7 @@ export function DistributionPie({
           strokeWidth={0}
         >
           {sorted.map((d) => (
-            <Cell key={d.name} fill={colorOf(d.name)} />
+            <Cell key={d.key} fill={colorOf(d.key)} />
           ))}
         </Pie>
         <Tooltip
@@ -290,9 +322,9 @@ export function DistributionPie({
             <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
               {sorted.map((d) => (
                 <li
-                  key={d.name}
+                  key={d.key}
                   style={{
-                    color: colorOf(d.name),
+                    color: colorOf(d.key),
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
@@ -305,7 +337,7 @@ export function DistributionPie({
                       height: 10,
                       borderRadius: 2,
                       flexShrink: 0,
-                      background: colorOf(d.name),
+                      background: colorOf(d.key),
                     }}
                   />
                   {d.name}

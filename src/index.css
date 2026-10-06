@@ -98,6 +98,14 @@ html.quick-panel-opaque body {
   background: var(--background);
 }
 
+/* Notch companion window: fully transparent stage, the black bar draws
+   itself (NotchBar.tsx). Scrolling would break the fusion illusion. */
+html.notch-window,
+html.notch-window body {
+  background: transparent;
+  overflow: hidden;
+}
+
 /* Recharts SVG elements get a default focus ring when clicked — remove it */
 .recharts-wrapper:focus,
 .recharts-wrapper :focus,

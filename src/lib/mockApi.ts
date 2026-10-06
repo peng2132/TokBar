@@ -5,14 +5,17 @@
 
 import type {
   Block,
+  CostMode,
   DailyRow,
   ModelRow,
   Overview,
+  PricingStatus,
   ProjectRow,
   ScanStats,
   SessionRow,
   SourceInfo,
 } from "./api";
+import { startOfToday } from "./dates";
 
 /** Small LCG; stable across reloads for a given seed. */
 function makeRng(seed: number) {
@@ -35,9 +38,14 @@ const AGENT_MODELS: Record<string, [string, number][]> = {
     ["claude-sonnet-4-5-20250929", 0.63],
     ["claude-opus-4-5-20251101", 0.37],
   ],
-  codex: [["gpt-5.2-codex", 1]],
+  codex: [
+    ["gpt-5.2-codex", 0.94],
+    ["codex-mini-preview", 0.06],
+  ],
   kimi: [["kimi-k2.6", 1]],
 };
+/** Models with no known price: priced: false, cost counted as $0. */
+const UNPRICED = new Set(["codex-mini-preview"]);
 const PROJECTS = [
   "TokBar",
   "meridian-api",
@@ -47,12 +55,6 @@ const PROJECTS = [
 ];
 
 const DAY = 86_400_000;
-
-function startOfToday(): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
 
 function fmtDate(ms: number): string {
   const d = new Date(ms);
@@ -94,15 +96,17 @@ function fill(row: DailyRow, cost: number, rnd: () => number): DailyRow {
 /** Per-(day, agent) usage for the last 120 days, weekday-weighted. */
 function allDaily(): DailyRow[] {
   const rnd = makeRng(20260703);
-  const today = startOfToday();
   const rows: DailyRow[] = [];
   for (let back = 119; back >= 0; back--) {
-    const dayMs = today - back * DAY;
+    const day = new Date(startOfToday());
+    day.setDate(day.getDate() - back); // calendar days: DST-safe
+    const dayMs = day.getTime();
     const weekday = new Date(dayMs).getDay();
     const weekend = weekday === 0 || weekday === 6;
     for (const agent of AGENTS) {
-      // Some quiet days; weekends lighter.
-      if (rnd() < (weekend ? 0.45 : 0.12)) continue;
+      // Some quiet days; weekends lighter. "Today" always has usage so
+      // the preview surfaces (quick panel, notch bar) never show $0.00.
+      if (back > 0 && rnd() < (weekend ? 0.45 : 0.12)) continue;
       const scale = AGENT_SCALE[agent] * (weekend ? 0.35 : 1);
       const cost = scale * (0.25 + rnd() * 1.5);
       rows.push(fill(emptyRow(fmtDate(dayMs), agent), cost, rnd));
@@ -194,6 +198,7 @@ function models(rows: DailyRow[]): ModelRow[] {
   const acc = new Map<string, ModelRow>();
   for (const r of rows) {
     for (const [model, share] of AGENT_MODELS[r.agent] ?? []) {
+      const priced = !UNPRICED.has(model);
       const m =
         acc.get(model) ??
         ({
@@ -205,8 +210,9 @@ function models(rows: DailyRow[]): ModelRow[] {
           cacheReadTokens: 0,
           totalTokens: 0,
           requests: 0,
-        } as ModelRow);
-      m.cost += r.cost * share;
+          priced,
+        } satisfies ModelRow);
+      if (priced) m.cost += r.cost * share;
       m.inputTokens += Math.round(r.inputTokens * share);
       m.outputTokens += Math.round(r.outputTokens * share);
       m.cacheCreationTokens += Math.round(r.cacheCreationTokens * share);
@@ -260,52 +266,112 @@ function projects(rows: DailyRow[]): ProjectRow[] {
   }).sort((a, b) => b.cost - a.cost);
 }
 
-function blocks(): Block[] {
-  const rnd = makeRng(5);
+/** Per-agent 5-hour blocks (the backend computes them independently per
+ *  agent): completed ones over the last few days, a gap, and a live block
+ *  for claude-code (most recent activity) and codex. */
+function allBlocks(): Block[] {
   const now = Date.now();
   const hour = 3_600_000;
+  const minute = 60_000;
   const alignedNow = Math.floor(now / hour) * hour;
   const out: Block[] = [];
-  // A handful of completed 5h blocks over the last two days + one live.
-  for (let i = 5; i >= 1; i--) {
-    const start = alignedNow - i * 9 * hour;
-    const cost = 4.3 + rnd() * 21;
-    out.push({
-      id: `blk-${i}`,
-      startMs: start,
-      endMs: start + 5 * hour,
-      actualEndMs: start + Math.round((2.1 + rnd() * 2.6) * hour),
-      isActive: false,
-      isGap: false,
-      cost,
-      totalTokens: Math.round(cost * 840_000),
-      requests: Math.max(3, Math.round(cost * 11)),
-      models: AGENT_MODELS["claude-code"].map(([m]) => m),
-      burnRateTpm: null,
-      burnRateCostPerHour: null,
-    });
+  const plan: { agent: string; seed: number; count: number; spacingH: number; scale: number }[] = [
+    { agent: "claude-code", seed: 5, count: 5, spacingH: 9, scale: 1 },
+    { agent: "codex", seed: 11, count: 3, spacingH: 13, scale: 0.45 },
+  ];
+  for (const { agent, seed, count, spacingH, scale } of plan) {
+    const rnd = makeRng(seed);
+    const models = (AGENT_MODELS[agent] ?? []).map(([m]) => m);
+    for (let i = count; i >= 1; i--) {
+      const start = alignedNow - i * spacingH * hour;
+      const cost = (4.3 + rnd() * 21) * scale;
+      out.push({
+        id: `${agent}-blk-${i}`,
+        agent,
+        startMs: start,
+        endMs: start + 5 * hour,
+        actualEndMs: start + Math.round((2.1 + rnd() * 2.6) * hour),
+        isActive: false,
+        isGap: false,
+        cost,
+        totalTokens: Math.round(cost * 840_000),
+        requests: Math.max(3, Math.round(cost * 11)),
+        models,
+        burnRateTpm: null,
+        burnRateCostPerHour: null,
+      });
+    }
   }
-  const liveStart = alignedNow - 2 * hour;
+  // An idle stretch between two claude-code blocks.
   out.push({
-    id: "blk-live",
-    startMs: liveStart,
-    endMs: liveStart + 5 * hour,
+    id: "claude-code-gap-1",
+    agent: "claude-code",
+    startMs: alignedNow - 40 * hour,
+    endMs: alignedNow - 36 * hour,
     actualEndMs: null,
+    isActive: false,
+    isGap: true,
+    cost: 0,
+    totalTokens: 0,
+    requests: 0,
+    models: [],
+    burnRateTpm: null,
+    burnRateCostPerHour: null,
+  });
+  const ccLive = alignedNow - 2 * hour;
+  out.push({
+    id: "claude-code-blk-live",
+    agent: "claude-code",
+    startMs: ccLive,
+    endMs: ccLive + 5 * hour,
+    actualEndMs: now - 3 * minute,
     isActive: true,
     isGap: false,
     cost: 12.47,
     totalTokens: 9_882_340,
     requests: 141,
-    models: [
-      "claude-sonnet-4-5-20250929",
-      "claude-opus-4-5-20251101",
-      "gpt-5.2-codex",
-    ],
+    models: ["claude-sonnet-4-5-20250929", "claude-opus-4-5-20251101"],
     burnRateTpm: 68_430,
     burnRateCostPerHour: 5.93,
   });
-  return out.reverse();
+  const cxLive = alignedNow - 3 * hour;
+  out.push({
+    id: "codex-blk-live",
+    agent: "codex",
+    startMs: cxLive,
+    endMs: cxLive + 5 * hour,
+    actualEndMs: now - 47 * minute,
+    isActive: true,
+    isGap: false,
+    cost: 3.82,
+    totalTokens: 3_104_220,
+    requests: 52,
+    models: ["gpt-5.2-codex"],
+    burnRateTpm: 17_210,
+    burnRateCostPerHour: 1.27,
+  });
+  // Most recent first, like the backend.
+  return out.sort((a, b) => b.startMs - a.startMs);
 }
+
+function blocks(args?: Record<string, unknown>): Block[] {
+  const sinceMs = (args?.sinceMs as number | undefined) ?? 0;
+  const agent = args?.agent as string | undefined;
+  return allBlocks().filter(
+    (b) => b.endMs > sinceMs && (agent == null || b.agent === agent),
+  );
+}
+
+let costMode: CostMode = "auto";
+let pricing: PricingStatus = {
+  source: "snapshot",
+  snapshotDate: "2026-09-28",
+  fetchedAtMs: null,
+  modelCount: 1873,
+  lastError: null,
+  refreshing: false,
+  unpricedModels: [...UNPRICED],
+};
 
 function sources(): SourceInfo[] {
   const home = "~/";
@@ -339,6 +405,7 @@ function sources(): SourceInfo[] {
 }
 
 let trayMode = "cost";
+let notchEnabled = true;
 
 export async function mockInvoke<T>(
   cmd: string,
@@ -368,7 +435,7 @@ export async function mockInvoke<T>(
     case "get_projects":
       return projects(filtered(args)) as T;
     case "get_blocks":
-      return blocks() as T;
+      return blocks(args) as T;
     case "get_sources":
       return sources() as T;
     case "get_session_models":
@@ -383,6 +450,48 @@ export async function mockInvoke<T>(
       trayMode = (args?.mode as string) ?? "cost";
       return undefined as T;
     case "show_main_window":
+      return undefined as T;
+    case "get_notch_info":
+      // 14" MacBook Pro numbers: 1512×982 logical, ~200px notch, 38px bar.
+      return {
+        hasNotch: true,
+        notchWidth: 200,
+        barHeight: 38,
+        screenWidth: 1512,
+      } as T;
+    case "get_notch_enabled":
+      return notchEnabled as T;
+    case "set_notch_enabled":
+      notchEnabled = Boolean(args?.enabled);
+      return undefined as T;
+    case "notch_resize":
+      return undefined as T;
+    case "get_cost_mode":
+      return costMode as T;
+    case "set_cost_mode": {
+      const mode = args?.mode;
+      if (mode !== "auto" && mode !== "calculate" && mode !== "display") {
+        throw new Error(`set_cost_mode: invalid mode ${String(mode)}`);
+      }
+      costMode = mode;
+      return undefined as T;
+    }
+    case "get_pricing_status":
+      return { ...pricing } as T;
+    case "refresh_pricing":
+      // Slow like the real network fetch, so the spinner is visible.
+      pricing = { ...pricing, refreshing: true };
+      await new Promise((r) => setTimeout(r, 1200));
+      pricing = {
+        ...pricing,
+        source: "online",
+        fetchedAtMs: Date.now(),
+        modelCount: 1921,
+        lastError: null,
+        refreshing: false,
+      };
+      return { ...pricing } as T;
+    case "set_language":
       return undefined as T;
     default:
       throw new Error(`mockInvoke: unhandled command ${cmd}`);

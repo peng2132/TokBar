@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { api } from "./api";
 
 export type Lang = "zh" | "en";
 
@@ -23,6 +24,7 @@ const en = {
   "app.scanProgress": "Scanning {done}/{total}",
   "app.upToDate": "Up to date",
   "app.refreshed": "Updated {n} entries",
+  "app.refreshFailed": "Refresh failed",
   "range.today": "Today",
   "range.7d": "7D",
   "range.30d": "30D",
@@ -50,11 +52,15 @@ const en = {
   "blocks.remainM": "{m}m left",
   "unit.perMin": "/min",
   "unit.perHour": "/h",
+  /** Tight slots (notch wing) where "/小时" would not fit. */
+  "unit.perHourShort": "/h",
   "unit.tok": "tok",
 
   // Table heads
   "th.date": "Date",
   "th.time": "Time",
+  "th.week": "Week of",
+  "th.month": "Month",
   "th.input": "Input",
   "th.output": "Output",
   "th.cacheWrite": "Cache Write",
@@ -72,9 +78,18 @@ const en = {
   "trends.byDay": "Daily",
   "trends.byWeek": "Weekly",
   "trends.byMonth": "Monthly",
-  "trends.dailyCost": "Daily Cost",
-  "trends.dailyTokens": "Daily Tokens by Type",
-  "trends.dailyBreakdown": "Daily Breakdown",
+  "trends.cost.hour": "Hourly Cost",
+  "trends.cost.day": "Daily Cost",
+  "trends.cost.week": "Weekly Cost",
+  "trends.cost.month": "Monthly Cost",
+  "trends.tokens.hour": "Hourly Tokens by Type",
+  "trends.tokens.day": "Daily Tokens by Type",
+  "trends.tokens.week": "Weekly Tokens by Type",
+  "trends.tokens.month": "Monthly Tokens by Type",
+  "trends.breakdown.hour": "Hourly Breakdown",
+  "trends.breakdown.day": "Daily Breakdown",
+  "trends.breakdown.week": "Weekly Breakdown",
+  "trends.breakdown.month": "Monthly Breakdown",
   "chart.input": "Input",
   "chart.output": "Output",
   "chart.cacheRead": "Cache Read",
@@ -93,9 +108,8 @@ const en = {
 
   // Blocks
   "blocks.desc":
-    "5-hour billing blocks: usage is grouped into 5-hour windows aligned to the hour, matching Claude's session billing window. Last 14 days.",
-  "blocks.empty": "No billing blocks in the last 14 days",
-  "blocks.active": "Active block",
+    "5-hour billing blocks: each agent's usage is grouped into 5-hour windows aligned to the hour, matching Claude's session billing window. Last {days} days.",
+  "blocks.empty": "No billing blocks in the last {days} days",
   "blocks.completed": "Completed",
   "blocks.live": "LIVE",
   "blocks.cost": "Cost",
@@ -115,14 +129,30 @@ const en = {
   "settings.theme.dark": "Dark",
   "settings.theme.light": "Light",
   "settings.accentColor": "Accent color",
-  "settings.trayDisplay": "Menu Bar",
+  "settings.accent.amber": "Amber",
+  "settings.accent.blue": "Blue",
+  "settings.accent.emerald": "Emerald",
+  "settings.accent.violet": "Violet",
+  "settings.accent.rose": "Rose",
+  "settings.saveFailed": "Couldn't save that setting. Please try again.",
+  "settings.trayDisplay": "Always-On Display",
   "settings.trayDisplayDesc":
-    "What to show next to the menu bar icon at the top right of your screen.",
+    "Today's usage, always visible at the top of your screen.",
   "settings.tray.cost": "Today's cost",
   "settings.tray.tokens": "Today's tokens",
   "settings.tray.off": "Icon only",
+  "settings.displayPosition": "Position",
+  "settings.position.notch": "Notch",
+  "settings.position.menubar": "Menu bar",
+  "settings.position.notchHint":
+    "At rest it looks like the notch itself (a green dot glows while a billing block is active). Hover to reveal the numbers, click to expand details.",
+  "settings.trayContent": "Menu bar content",
+  "notch.other": "Other",
+  "notch.rhythm": "Today's rhythm",
+  "notch.peak": "peak",
+  "notch.expand": "Show today's usage details",
+  "notch.collapse": "Hide usage details",
   "settings.dataSources": "Data Sources",
-  "settings.notDetected": "Not detected on this machine",
   "settings.sources.inactive": "Not detected ({n})",
   "settings.files": "{n} files",
   "settings.lastScan":
@@ -138,7 +168,23 @@ const en = {
   "settings.mode.displayDesc": "Only show pre-computed costUSD from logs.",
   "settings.pricing": "Pricing Data",
   "settings.pricingDesc":
-    "Cost is calculated from LiteLLM's community model pricing database. Rates refresh automatically once a day (checked at launch). New rates apply to new usage going forward — historical costs keep the rates in effect when they were recorded.",
+    "Cost is calculated from LiteLLM's community model pricing database. Prices refresh automatically once a day; a successful refresh re-prices all recorded usage. Without a network connection the price table built into the app is used.",
+  "pricing.source": "Source",
+  "pricing.online": "Online (LiteLLM)",
+  "pricing.snapshot": "Offline snapshot",
+  "pricing.snapshotDate": "built in, prices as of {date}",
+  "pricing.fetchedAt": "fetched {time}",
+  "pricing.models": "Priced models",
+  "pricing.refresh": "Refresh prices",
+  "pricing.refreshing": "Refreshing…",
+  "pricing.lastError": "Last refresh failed: {error}",
+  "pricing.unpricedTitle": "Unpriced models ({n})",
+  "pricing.unpricedDesc":
+    "No price is known for these models, so their usage is counted as $0 — the real cost is higher.",
+  "pricing.allPriced": "Every model in your usage has a known price.",
+  "pricing.unpriced": "unpriced",
+  "pricing.unpricedTip":
+    "No price is known for this model: its usage is counted as $0, which is not its real cost.",
 
   // Quick panel (menu bar popover)
   "quick.todayCost": "Today's Cost",
@@ -176,7 +222,6 @@ const en = {
   "settings.sub.perMonth": "/mo",
   "settings.sub.quickAdd": "Quick add",
   "settings.sub.custom": "Custom",
-  "settings.sub.add": "Add subscription",
   "settings.sub.remove": "Remove",
   "settings.sub.confirmRemove": "Confirm delete",
   "settings.sub.empty":
@@ -196,6 +241,7 @@ const zh: Record<keyof typeof en, string> = {
   "app.scanProgress": "扫描中 {done}/{total}",
   "app.upToDate": "已是最新",
   "app.refreshed": "已更新 {n} 条",
+  "app.refreshFailed": "刷新失败",
   "range.today": "今日",
   "range.7d": "7天",
   "range.30d": "30天",
@@ -222,10 +268,13 @@ const zh: Record<keyof typeof en, string> = {
   "blocks.remainM": "还剩 {m} 分钟",
   "unit.perMin": "/分钟",
   "unit.perHour": "/小时",
+  "unit.perHourShort": "/时",
   "unit.tok": "tok",
 
   "th.date": "日期",
   "th.time": "时间段",
+  "th.week": "周起始",
+  "th.month": "月份",
   "th.input": "输入",
   "th.output": "输出",
   "th.cacheWrite": "缓存写入",
@@ -242,9 +291,18 @@ const zh: Record<keyof typeof en, string> = {
   "trends.byDay": "按日",
   "trends.byWeek": "按周",
   "trends.byMonth": "按月",
-  "trends.dailyCost": "每日成本",
-  "trends.dailyTokens": "每日 Token(按类型)",
-  "trends.dailyBreakdown": "每日明细",
+  "trends.cost.hour": "每小时成本",
+  "trends.cost.day": "每日成本",
+  "trends.cost.week": "每周成本",
+  "trends.cost.month": "每月成本",
+  "trends.tokens.hour": "每小时 Token(按类型)",
+  "trends.tokens.day": "每日 Token(按类型)",
+  "trends.tokens.week": "每周 Token(按类型)",
+  "trends.tokens.month": "每月 Token(按类型)",
+  "trends.breakdown.hour": "每小时明细",
+  "trends.breakdown.day": "每日明细",
+  "trends.breakdown.week": "每周明细",
+  "trends.breakdown.month": "每月明细",
   "chart.input": "输入",
   "chart.output": "输出",
   "chart.cacheRead": "缓存读取",
@@ -260,9 +318,8 @@ const zh: Record<keyof typeof en, string> = {
   "models.all": "全部模型",
 
   "blocks.desc":
-    "5 小时计费块:用量按整点对齐的 5 小时窗口分组,对应 Claude 的会话计费窗口。显示最近 14 天。",
-  "blocks.empty": "最近 14 天内没有计费块",
-  "blocks.active": "进行中",
+    "5 小时计费块:每个 Agent 的用量按整点对齐的 5 小时窗口分组,对应 Claude 的会话计费窗口。显示最近 {days} 天。",
+  "blocks.empty": "最近 {days} 天内没有计费块",
   "blocks.completed": "已结束",
   "blocks.live": "进行中",
   "blocks.cost": "成本",
@@ -281,13 +338,29 @@ const zh: Record<keyof typeof en, string> = {
   "settings.theme.dark": "深色",
   "settings.theme.light": "浅色",
   "settings.accentColor": "主题色",
-  "settings.trayDisplay": "菜单栏",
-  "settings.trayDisplayDesc": "屏幕右上角菜单栏图标旁显示的内容。",
+  "settings.accent.amber": "琥珀",
+  "settings.accent.blue": "蓝",
+  "settings.accent.emerald": "翠绿",
+  "settings.accent.violet": "紫罗兰",
+  "settings.accent.rose": "玫瑰",
+  "settings.saveFailed": "设置保存失败,请重试。",
+  "settings.trayDisplay": "常驻显示",
+  "settings.trayDisplayDesc": "屏幕顶部常驻的今日用量。",
   "settings.tray.cost": "今日成本",
   "settings.tray.tokens": "今日 Token",
   "settings.tray.off": "仅图标",
+  "settings.displayPosition": "显示位置",
+  "settings.position.notch": "刘海",
+  "settings.position.menubar": "菜单栏",
+  "settings.position.notchHint":
+    "平时看起来就是刘海本身(计费活跃时亮起小绿点);鼠标移上去显示数字,点击展开详情。",
+  "settings.trayContent": "菜单栏内容",
+  "notch.other": "其他",
+  "notch.rhythm": "今日节奏",
+  "notch.peak": "峰值",
+  "notch.expand": "展开今日用量详情",
+  "notch.collapse": "收起用量详情",
   "settings.dataSources": "数据源",
-  "settings.notDetected": "本机未检测到",
   "settings.sources.inactive": "未检测到 ({n})",
   "settings.files": "{n} 个文件",
   "settings.lastScan":
@@ -302,7 +375,22 @@ const zh: Record<keyof typeof en, string> = {
   "settings.mode.displayDesc": "只显示日志中预先计算好的 costUSD。",
   "settings.pricing": "定价数据",
   "settings.pricingDesc":
-    "成本基于 LiteLLM 社区模型价格库计算。价格每天自动更新一次(启动时检查),新价格只用于之后的新增用量 —— 历史成本保持记录时的价格不变。",
+    "成本基于 LiteLLM 社区模型价格库计算。价格每天自动更新一次,更新成功后会按新价格重新计算全部已记录用量。无网络时使用应用内置的价格表。",
+  "pricing.source": "来源",
+  "pricing.online": "在线(LiteLLM)",
+  "pricing.snapshot": "离线快照",
+  "pricing.snapshotDate": "内置,价格截至 {date}",
+  "pricing.fetchedAt": "获取于 {time}",
+  "pricing.models": "已定价模型",
+  "pricing.refresh": "刷新价格",
+  "pricing.refreshing": "刷新中…",
+  "pricing.lastError": "上次刷新失败:{error}",
+  "pricing.unpricedTitle": "未定价模型({n})",
+  "pricing.unpricedDesc":
+    "这些模型没有已知价格,其用量按 $0 计入 —— 实际成本更高。",
+  "pricing.allPriced": "用量中的所有模型都有已知价格。",
+  "pricing.unpriced": "未定价",
+  "pricing.unpricedTip": "该模型没有已知价格:其用量按 $0 计入,并非真实成本。",
 
   "quick.todayCost": "今日成本",
   "quick.todayTokens": "今日 Token",
@@ -339,7 +427,6 @@ const zh: Record<keyof typeof en, string> = {
   "settings.sub.perMonth": "/月",
   "settings.sub.quickAdd": "快速添加",
   "settings.sub.custom": "自定义",
-  "settings.sub.add": "添加订阅",
   "settings.sub.remove": "删除",
   "settings.sub.confirmRemove": "确认删除",
   "settings.sub.empty": "还没有订阅 —— 在下方选一个即可在总览看到回本情况。",
@@ -388,6 +475,13 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+
+  // The backend localizes the menu-bar tooltip; tell it on startup and on
+  // every change. Idempotent, so every window reporting the same
+  // (shared, storage-synced) language is harmless.
+  useEffect(() => {
+    api.setLanguage(lang).catch((e) => console.error("set_language failed:", e));
+  }, [lang]);
 
   const t = useCallback(
     (key: I18nKey, vars?: Record<string, string | number>) => {

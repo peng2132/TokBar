@@ -14,9 +14,21 @@ import {
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LoadError } from "@/components/LoadError";
-import { CostTrendChart, TokenTrendChart } from "@/components/charts";
+import {
+  CostTrendChart,
+  TokenTrendChart,
+  type Granularity,
+} from "@/components/charts";
 
-type Granularity = "day" | "week" | "month";
+/** User-selectable re-bucketing; "hour" comes from the Today range. */
+type Bucket = Exclude<Granularity, "hour">;
+
+const DATE_HEAD: Record<Granularity, I18nKey> = {
+  hour: "th.time",
+  day: "th.date",
+  week: "th.week",
+  month: "th.month",
+};
 
 /** Monday of the week containing `date` (YYYY-MM-DD). */
 function weekStart(date: string): string {
@@ -29,7 +41,7 @@ function weekStart(date: string): string {
 }
 
 /** Re-bucket per-(date, agent) rows into week or month buckets. */
-function rebucket(rows: DailyRow[], granularity: Granularity): DailyRow[] {
+function rebucket(rows: DailyRow[], granularity: Bucket): DailyRow[] {
   if (granularity === "day") return rows;
   const acc = new Map<string, DailyRow>();
   for (const r of rows) {
@@ -62,26 +74,33 @@ export function TrendsPage({
   hourly: boolean;
 }) {
   const { t } = useI18n();
-  const [rawDaily, setRawDaily] = useState<DailyRow[] | null>(null);
+  // Rows remember which query they answer, so a range switch shows a
+  // skeleton instead of the previous range's (or hourly vs daily) data.
+  const [loaded, setLoaded] = useState<{ key: string; rows: DailyRow[] } | null>(
+    null,
+  );
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [granularity, setGranularity] = useState<Granularity>("day");
+  const [bucket, setBucket] = useState<Bucket>("day");
+  const queryKey = `${hourly}|${params.sinceMs}|${params.untilMs}|${params.costMode}`;
 
   useEffect(() => {
     let cancelled = false;
     setError(false);
     const fetch = hourly ? api.getHourly : api.getDaily;
     fetch(params)
-      .then((d) => !cancelled && setRawDaily(d))
+      .then((rows) => !cancelled && setLoaded({ key: queryKey, rows }))
       .catch(() => !cancelled && setError(true));
     return () => {
       cancelled = true;
     };
-  }, [params.sinceMs, params.untilMs, params.costMode, refreshKey, hourly, attempt]);
+  }, [queryKey, refreshKey, attempt]);
 
+  const rawDaily = loaded?.key === queryKey ? loaded.rows : null;
+  const granularity: Granularity = hourly ? "hour" : bucket;
   const daily = useMemo(
-    () => (rawDaily && !hourly ? rebucket(rawDaily, granularity) : rawDaily),
-    [rawDaily, granularity, hourly],
+    () => (rawDaily && !hourly ? rebucket(rawDaily, bucket) : rawDaily),
+    [rawDaily, bucket, hourly],
   );
 
   if (error) {
@@ -111,7 +130,7 @@ export function TrendsPage({
     b.date.localeCompare(a.date),
   );
 
-  const granularities: { id: Granularity; labelKey: I18nKey }[] = [
+  const buckets: { id: Bucket; labelKey: I18nKey }[] = [
     { id: "day", labelKey: "trends.byDay" },
     { id: "week", labelKey: "trends.byWeek" },
     { id: "month", labelKey: "trends.byMonth" },
@@ -122,13 +141,14 @@ export function TrendsPage({
       {!hourly && (
         <div className="flex justify-end">
           <div className="flex rounded-lg border border-border p-0.5">
-            {granularities.map((g) => (
+            {buckets.map((g) => (
               <button
                 key={g.id}
-                onClick={() => setGranularity(g.id)}
+                onClick={() => setBucket(g.id)}
+                aria-pressed={bucket === g.id}
                 className={cn(
                   "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                  granularity === g.id
+                  bucket === g.id
                     ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:text-foreground",
                 )}
@@ -141,29 +161,29 @@ export function TrendsPage({
       )}
       <Card>
         <CardHeader>
-          <CardTitle>{t("trends.dailyCost")}</CardTitle>
+          <CardTitle>{t(`trends.cost.${granularity}` as const)}</CardTitle>
         </CardHeader>
         <CardContent>
-          <CostTrendChart rows={daily} />
+          <CostTrendChart rows={daily} granularity={granularity} />
         </CardContent>
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>{t("trends.dailyTokens")}</CardTitle>
+          <CardTitle>{t(`trends.tokens.${granularity}` as const)}</CardTitle>
         </CardHeader>
         <CardContent>
-          <TokenTrendChart rows={daily} />
+          <TokenTrendChart rows={daily} granularity={granularity} />
         </CardContent>
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>{t("trends.dailyBreakdown")}</CardTitle>
+          <CardTitle>{t(`trends.breakdown.${granularity}` as const)}</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t(hourly ? "th.time" : "th.date")}</TableHead>
+                <TableHead>{t(DATE_HEAD[granularity])}</TableHead>
                 <TableHead className="text-right">{t("th.input")}</TableHead>
                 <TableHead className="text-right">{t("th.output")}</TableHead>
                 <TableHead className="text-right">{t("th.cacheWrite")}</TableHead>

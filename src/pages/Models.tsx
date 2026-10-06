@@ -1,11 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type ModelRow, type QueryParams } from "@/lib/api";
-import {
-  formatCost,
-  formatNumber,
-  formatTokens,
-  shortModelName,
-} from "@/lib/format";
+import { formatCost, formatNumber, formatTokens } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -16,8 +11,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { DistributionPie } from "@/components/charts";
+import { DistributionPie, modelPie } from "@/components/charts";
 import { LoadError } from "@/components/LoadError";
+import { UnpricedBadge } from "@/components/UnpricedBadge";
 import { useI18n } from "@/lib/i18n";
 
 export function ModelsPage({
@@ -44,21 +40,20 @@ export function ModelsPage({
     };
   }, [params.sinceMs, params.untilMs, params.costMode, refreshKey, attempt]);
 
+  // Both pies take the same top-8 (cost order) so a model keeps one
+  // color across them; slices are keyed by full model id.
+  const costPie = useMemo(() => modelPie(models ?? [], "cost", 8), [models]);
+  const tokenPie = useMemo(
+    () => modelPie(models ?? [], "totalTokens", 8),
+    [models],
+  );
+
   if (error) {
     return <LoadError onRetry={() => setAttempt((a) => a + 1)} />;
   }
   if (!models) {
     return <Skeleton className="h-80" />;
   }
-
-  const costPie = models.slice(0, 8).map((m) => ({
-    name: shortModelName(m.model),
-    value: m.cost,
-  }));
-  const tokenPie = models.slice(0, 8).map((m) => ({
-    name: shortModelName(m.model),
-    value: m.totalTokens,
-  }));
 
   return (
     <div className="space-y-4">
@@ -101,8 +96,11 @@ export function ModelsPage({
               {models.map((m) => (
                 <TableRow key={m.model}>
                   <TableCell className="font-medium">
-                    <span className="block max-w-64 truncate" title={m.model}>
-                      {m.model}
+                    <span className="flex max-w-80 items-center gap-1.5">
+                      <span className="truncate" title={m.model}>
+                        {m.model}
+                      </span>
+                      {m.priced === false && <UnpricedBadge />}
                     </span>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">

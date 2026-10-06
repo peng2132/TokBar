@@ -1,99 +1,82 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
-import { Check, Flame, LayoutDashboard, RefreshCw } from "lucide-react";
-import { IN_TAURI, api, onEvent, type Block } from "@/lib/api";
-import { formatCost, formatNumber, formatTime, formatTokens } from "@/lib/format";
+import {
+  AlertTriangle,
+  Check,
+  Flame,
+  LayoutDashboard,
+  RefreshCw,
+} from "lucide-react";
+import { IN_TAURI, api } from "@/lib/api";
+import {
+  agentLabel,
+  formatCost,
+  formatNumber,
+  formatTime,
+  formatTokens,
+} from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
+import { useTodayStats } from "@/lib/useTodayStats";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/Logo";
 
-interface QuickStats {
-  todayCost: number;
-  todayTokens: number;
-  todayRequests: number;
-  monthCost: number;
-  activeBlock: Block | null;
-}
-
-function startOfToday(): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
-function startOfMonth(): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(1);
-  return d.getTime();
-}
-
 export function QuickPanel() {
   const { t } = useI18n();
-  const [stats, setStats] = useState<QuickStats | null>(null);
+  // Reloads when shown, on live usage updates and on a slow poll so the
+  // burn rate stays current. The panel is hidden ~99% of the time
+  // (hide-on-blur, webview stays alive), so polls and watcher events are
+  // skipped while hidden — the reload on show catches up.
+  const { stats, error, reload } = useTodayStats({
+    month: true,
+    pollMs: 30_000,
+    pauseWhileHidden: true,
+  });
   const [refreshing, setRefreshing] = useState(false);
   const [justRefreshed, setJustRefreshed] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const feedbackTimer = useRef<number | undefined>(undefined);
 
-  const load = useCallback(async () => {
-    const [today, month, blocks] = await Promise.all([
-      api.getOverview({ sinceMs: startOfToday() }),
-      api.getOverview({ sinceMs: startOfMonth() }),
-      api.getBlocks({ sinceMs: Date.now() - 86_400_000 }),
-    ]);
-    setStats({
-      todayCost: today.totals.cost,
-      todayTokens: today.totals.totalTokens,
-      todayRequests: today.totals.requests,
-      monthCost: month.totals.cost,
-      activeBlock: blocks.find((b) => b.isActive) ?? null,
-    });
-  }, []);
+  useEffect(() => () => window.clearTimeout(feedbackTimer.current), []);
 
   // Minimum spin + a brief check mark: the file watcher keeps data
   // current, so the scan usually finishes in milliseconds and the click
   // would otherwise look like a no-op.
   const refresh = useCallback(async () => {
     setRefreshing(true);
+    setRefreshFailed(false);
+    window.clearTimeout(feedbackTimer.current);
     try {
       await Promise.all([
         api.refreshData(),
         new Promise((r) => setTimeout(r, 500)),
       ]);
-      await load();
+      await reload();
       setJustRefreshed(true);
-      setTimeout(() => setJustRefreshed(false), 1800);
+      feedbackTimer.current = window.setTimeout(
+        () => setJustRefreshed(false),
+        1800,
+      );
+    } catch (e) {
+      console.error("refresh failed:", e);
+      setRefreshFailed(true);
+      feedbackTimer.current = window.setTimeout(
+        () => setRefreshFailed(false),
+        4000,
+      );
     } finally {
       setRefreshing(false);
     }
-  }, [load]);
-
-  // Reload when shown (focus/visibility), on live usage updates from the
-  // file watcher, and on a slow poll so the burn rate stays current. The
-  // panel is hidden ~99% of the time (hide-on-blur, webview stays alive),
-  // so the poll and watcher events are skipped while not visible — the
-  // visibilitychange reload catches up the moment it reopens.
-  useEffect(() => {
-    load();
-    const loadIfVisible = () => {
-      if (!document.hidden) load();
-    };
-    window.addEventListener("focus", load);
-    document.addEventListener("visibilitychange", loadIfVisible);
-    const timer = setInterval(loadIfVisible, 30_000);
-    const unlisten = onEvent("usage-updated", loadIfVisible);
-    return () => {
-      window.removeEventListener("focus", load);
-      document.removeEventListener("visibilitychange", loadIfVisible);
-      clearInterval(timer);
-      unlisten.then((fn) => fn());
-    };
-  }, [load]);
+  }, [reload]);
 
   // Deep link: open the main window already switched to the right page.
   const openPage = useCallback(async (page: string) => {
-    await api.showMainWindow();
-    if (IN_TAURI) {
-      await emit("navigate-page", page);
+    try {
+      await api.showMainWindow();
+      if (IN_TAURI) {
+        await emit("navigate-page", page);
+      }
+    } catch (e) {
+      console.error("opening the dashboard failed:", e);
     }
   }, []);
 
@@ -109,16 +92,40 @@ export function QuickPanel() {
         </div>
         <button
           onClick={refresh}
+          disabled={refreshing}
           className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          title={t("app.refresh")}
+          title={refreshFailed ? t("app.refreshFailed") : t("app.refresh")}
+          aria-label={refreshFailed ? t("app.refreshFailed") : t("app.refresh")}
         >
-          {justRefreshed && !refreshing ? (
+          {refreshFailed && !refreshing ? (
+            <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
+          ) : justRefreshed && !refreshing ? (
             <Check className="h-3.5 w-3.5 text-primary" />
           ) : (
             <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
           )}
         </button>
       </div>
+
+      {/* Load failure: keep the last good numbers, say they may be stale. */}
+      {error && (
+        <div
+          role="alert"
+          className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs text-red-500"
+        >
+          <span className="flex items-center gap-1.5">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            {t("common.loadFailed")}
+          </span>
+          <button
+            type="button"
+            onClick={() => void reload()}
+            className="rounded px-1.5 py-0.5 font-medium transition-colors hover:bg-red-500/10"
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
 
       {/* Today cost — every card deep-links into the matching page */}
       <button
@@ -146,12 +153,13 @@ export function QuickPanel() {
         />
         <MiniStat
           label={t("quick.monthCost")}
-          value={stats ? formatCost(stats.monthCost) : "—"}
+          value={stats?.monthCost != null ? formatCost(stats.monthCost) : "—"}
           onClick={() => openPage("trends")}
         />
       </div>
 
-      {/* Active block */}
+      {/* Active block (of the most recently active agent; blocks are per
+          agent, so the header names whose it is). */}
       <button
         type="button"
         onClick={() => openPage("blocks")}
@@ -159,9 +167,12 @@ export function QuickPanel() {
       >
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Flame
-            className={cn("h-3.5 w-3.5", block ? "text-primary" : "")}
+            className={cn("h-3.5 w-3.5 shrink-0", block ? "text-primary" : "")}
           />
-          {t("quick.activeBlock")}
+          <span className="truncate">
+            {t("quick.activeBlock")}
+            {block && ` · ${agentLabel(block.agent)}`}
+          </span>
         </div>
         {block ? (
           <div className="mt-2 space-y-2">
@@ -209,7 +220,11 @@ export function QuickPanel() {
 
       {/* Footer */}
       <button
-        onClick={() => api.showMainWindow()}
+        onClick={() =>
+          api
+            .showMainWindow()
+            .catch((e) => console.error("opening the dashboard failed:", e))
+        }
         className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
       >
         <LayoutDashboard className="h-4 w-4" />

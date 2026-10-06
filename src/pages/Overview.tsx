@@ -22,8 +22,8 @@ import {
   formatCost,
   formatNumber,
   formatTokens,
-  shortModelName,
 } from "@/lib/format";
+import { startOfMonth } from "@/lib/dates";
 import { useI18n } from "@/lib/i18n";
 import { useSubscriptions } from "@/lib/subscriptions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,14 +31,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { LoadError } from "@/components/LoadError";
 import { StatCard } from "@/components/StatCard";
 import { RoiCard } from "@/components/RoiCard";
-import { CostTrendChart, DistributionPie } from "@/components/charts";
+import {
+  CostTrendChart,
+  DistributionPie,
+  modelPie as buildModelPie,
+} from "@/components/charts";
 
-/** Start of the current calendar month (local time). */
-function startOfMonth(): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(1);
-  return d.getTime();
+interface OverviewLoad {
+  /** Which query these rows answer (see `queryKey`). */
+  key: string;
+  overview: OverviewData;
+  daily: DailyRow[];
+  models: ModelRow[];
+  projects: ProjectRow[];
 }
 
 export function OverviewPage({
@@ -52,33 +57,41 @@ export function OverviewPage({
 }) {
   const { t } = useI18n();
   const { subscriptions } = useSubscriptions();
-  const [overview, setOverview] = useState<OverviewData | null>(null);
-  const [daily, setDaily] = useState<DailyRow[]>([]);
-  const [models, setModels] = useState<ModelRow[]>([]);
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const [monthByAgent, setMonthByAgent] = useState<AgentBreakdown[]>([]);
-  const [loading, setLoading] = useState(true);
+  const hasSubs = subscriptions.length > 0;
+  const [loaded, setLoaded] = useState<OverviewLoad | null>(null);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [monthByAgent, setMonthByAgent] = useState<AgentBreakdown[] | null>(
+    null,
+  );
+  const [roiError, setRoiError] = useState(false);
+  const [roiAttempt, setRoiAttempt] = useState(0);
 
   // ROI always reflects this calendar month at API prices, independent of
   // the page's range/cost-mode selector. Only fetched when there are
-  // subscriptions to price against.
+  // subscriptions to price against. The month bound is computed per fetch.
   useEffect(() => {
-    if (subscriptions.length === 0) return;
+    if (!hasSubs) return;
     let cancelled = false;
+    setRoiError(false);
     api
       .getOverview({ sinceMs: startOfMonth(), costMode: "calculate" })
       .then((o) => !cancelled && setMonthByAgent(o.byAgent))
-      .catch(() => {});
+      .catch((e) => {
+        console.error("ROI query failed:", e);
+        if (!cancelled) setRoiError(true);
+      });
     return () => {
       cancelled = true;
     };
-  }, [subscriptions, refreshKey]);
+  }, [hasSubs, refreshKey, roiAttempt]);
+
+  // Results are tagged with the query they answer: after a range switch
+  // the previous range's numbers are never shown under the new button.
+  const queryKey = `${hourly}|${params.sinceMs}|${params.untilMs}|${params.costMode}`;
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     setError(false);
     Promise.all([
       api.getOverview(params),
@@ -86,44 +99,42 @@ export function OverviewPage({
       api.getModels(params),
       api.getProjects({ ...params, limit: 6 }),
     ])
-      .then(([o, d, m, p]) => {
+      .then(([overview, daily, models, projects]) => {
         if (cancelled) return;
-        setOverview(o);
-        setDaily(d);
-        setModels(m);
-        setProjects(p);
+        setLoaded({ key: queryKey, overview, daily, models, projects });
       })
-      .catch(() => !cancelled && setError(true))
-      .finally(() => !cancelled && setLoading(false));
+      .catch((e) => {
+        console.error("overview query failed:", e);
+        if (!cancelled) setError(true);
+      });
     return () => {
       cancelled = true;
     };
-  }, [params.sinceMs, params.untilMs, params.costMode, refreshKey, hourly, attempt]);
+  }, [queryKey, refreshKey, attempt]);
+
+  const current = loaded?.key === queryKey ? loaded : null;
 
   // Stable references so DistributionPie's internal memo isn't defeated
   // by a fresh array on every unrelated re-render.
   const modelPie = useMemo(
-    () =>
-      models.slice(0, 6).map((m) => ({
-        name: shortModelName(m.model),
-        value: m.cost,
-      })),
-    [models],
+    () => buildModelPie(current?.models ?? [], "cost", 6),
+    [current],
   );
   const agentPie = useMemo(
     () =>
-      (overview?.byAgent ?? []).map((a, i) => ({
+      (current?.overview.byAgent ?? []).map((a) => ({
+        key: a.agent,
         name: agentLabel(a.agent),
         value: a.cost,
-        color: agentColor(a.agent, i),
+        color: agentColor(a.agent),
       })),
-    [overview],
+    [current],
   );
 
-  if (error && !overview) {
+  if (error) {
     return <LoadError onRetry={() => setAttempt((a) => a + 1)} />;
   }
-  if (loading && !overview) {
+  if (!current) {
     return (
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {Array.from({ length: 8 }).map((_, i) => (
@@ -133,40 +144,45 @@ export function OverviewPage({
     );
   }
 
-  const tot = overview?.totals;
+  const { overview, daily, projects } = current;
+  const tot = overview.totals;
 
   return (
     <div className="space-y-4">
-      <RoiCard monthByAgent={monthByAgent} />
+      <RoiCard
+        monthByAgent={monthByAgent}
+        failed={roiError}
+        onRetry={() => setRoiAttempt((a) => a + 1)}
+      />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
           title={t("overview.totalCost")}
-          value={formatCost(tot?.cost ?? 0)}
-          sub={t("overview.activeDays", { n: tot?.activeDays ?? 0 })}
+          value={formatCost(tot.cost)}
+          sub={t("overview.activeDays", { n: tot.activeDays })}
           icon={DollarSign}
         />
         <StatCard
           title={t("overview.totalTokens")}
-          value={formatTokens(tot?.totalTokens ?? 0)}
+          value={formatTokens(tot.totalTokens)}
           sub={t("overview.inOut", {
-            in: formatTokens(tot?.inputTokens ?? 0),
-            out: formatTokens(tot?.outputTokens ?? 0),
+            in: formatTokens(tot.inputTokens),
+            out: formatTokens(tot.outputTokens),
           })}
           icon={Coins}
         />
         <StatCard
           title={t("overview.requests")}
-          value={formatNumber(tot?.requests ?? 0)}
+          value={formatNumber(tot.requests)}
           sub={t("overview.cacheRead", {
-            n: formatTokens(tot?.cacheReadTokens ?? 0),
+            n: formatTokens(tot.cacheReadTokens),
           })}
           icon={MessageSquare}
         />
         <StatCard
           title={t("overview.sessions")}
-          value={formatNumber(tot?.sessions ?? 0)}
-          sub={t("overview.agents", { n: overview?.byAgent.length ?? 0 })}
+          value={formatNumber(tot.sessions)}
+          sub={t("overview.agents", { n: overview.byAgent.length })}
           icon={Activity}
         />
       </div>
@@ -177,7 +193,10 @@ export function OverviewPage({
         </CardHeader>
         <CardContent>
           {daily.length > 0 ? (
-            <CostTrendChart rows={daily} />
+            <CostTrendChart
+              rows={daily}
+              granularity={hourly ? "hour" : "day"}
+            />
           ) : (
             <EmptyHint />
           )}

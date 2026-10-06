@@ -1,14 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Flame, Hourglass } from "lucide-react";
 import { api, type Block, type CostMode } from "@/lib/api";
 import {
+  BLOCK_LOOKBACK_DAYS,
+  blockAgents,
+  blockLookbackSinceMs,
+  defaultBlockAgent,
+} from "@/lib/blocks";
+import {
+  agentLabel,
   formatCost,
   formatDateTime,
   formatNumber,
   formatTime,
   formatTokens,
+  remainingLabel,
   shortModelName,
 } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -26,20 +35,26 @@ export function BlocksPage({
   const [blocks, setBlocks] = useState<Block[] | null>(null);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // The user's pick; falls back to the default while it has no blocks.
+  const [picked, setPicked] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setError(false);
-    // Show roughly the last two weeks of 5-hour billing blocks.
-    const sinceMs = Date.now() - 14 * 86_400_000;
+    // Every agent's blocks over the shared lookback (the quick panel and
+    // notch bar use the same window, so they agree on the active block).
     api
-      .getBlocks({ sinceMs, costMode })
+      .getBlocks({ sinceMs: blockLookbackSinceMs(), costMode })
       .then((b) => !cancelled && setBlocks(b))
       .catch(() => !cancelled && setError(true));
     return () => {
       cancelled = true;
     };
   }, [costMode, refreshKey, attempt]);
+
+  const agents = useMemo(() => blockAgents(blocks ?? []), [blocks]);
+  const agent =
+    picked && agents.includes(picked) ? picked : defaultBlockAgent(agents);
 
   if (error) {
     return <LoadError onRetry={() => setAttempt((a) => a + 1)} />;
@@ -48,15 +63,43 @@ export function BlocksPage({
     return <Skeleton className="h-80" />;
   }
 
-  const usage = blocks.filter((b) => !b.isGap);
+  const usage = blocks.filter((b) => !b.isGap && b.agent === agent);
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">{t("blocks.desc")}</p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-2xl text-xs text-muted-foreground">
+          {t("blocks.desc", { days: BLOCK_LOOKBACK_DAYS })}
+        </p>
+        {/* Shown even for a single agent: it says whose blocks these are. */}
+        {agents.length > 0 && (
+          <div
+            role="group"
+            aria-label={t("th.agent")}
+            className="flex rounded-lg border border-border p-0.5"
+          >
+            {agents.map((a) => (
+              <button
+                key={a}
+                onClick={() => setPicked(a)}
+                aria-pressed={agent === a}
+                className={cn(
+                  "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                  agent === a
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {agentLabel(a)}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       {usage.length === 0 && (
         <Card>
           <CardContent className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-            {t("blocks.empty")}
+            {t("blocks.empty", { days: BLOCK_LOOKBACK_DAYS })}
           </CardContent>
         </Card>
       )}
@@ -77,6 +120,8 @@ export function BlocksPage({
                   {formatDateTime(b.startMs)} – {formatTime(b.endMs)}
                 </div>
                 <div className="text-xs text-muted-foreground">
+                  {/* The live badge already says "active"; the subtitle
+                      carries the useful fact: time left in the window. */}
                   {b.isActive ? remainingLabel(b.endMs, t) : t("blocks.completed")}
                 </div>
               </div>
@@ -109,20 +154,6 @@ export function BlocksPage({
       ))}
     </div>
   );
-}
-
-/** "还剩 2 小时 5 分" — the live badge already says "active", so the
- *  subtitle carries the genuinely useful fact: time left in the window. */
-function remainingLabel(
-  endMs: number,
-  t: ReturnType<typeof useI18n>["t"],
-): string {
-  const mins = Math.max(0, Math.round((endMs - Date.now()) / 60_000));
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return h > 0
-    ? t("blocks.remainHM", { h, m })
-    : t("blocks.remainM", { m });
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

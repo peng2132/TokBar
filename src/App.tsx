@@ -4,10 +4,11 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
-import { onEvent } from "@/lib/api";
 import {
+  AlertTriangle,
   BarChart3,
   Bot,
   Check,
@@ -19,12 +20,14 @@ import {
 } from "lucide-react";
 import {
   api,
+  onEvent,
   rangeToSinceMs,
-  type CostMode,
   type QueryParams,
   type RangeKey,
   type ScanStats,
 } from "@/lib/api";
+import { useCostMode } from "@/lib/costMode";
+import { useDayKey } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import { useI18n, type I18nKey } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
@@ -76,26 +79,30 @@ const RANGES: { id: RangeKey; labelKey: I18nKey }[] = [
   { id: "all", labelKey: "range.all" },
 ];
 
-// Persisted like lang/theme/subscriptions: the selected range and cost
-// mode survive restarts instead of silently resetting.
+// Persisted like lang/theme/subscriptions: the selected range survives
+// restarts instead of silently resetting. (The cost mode lives in the
+// backend; see useCostMode.)
 const RANGE_KEY = "tokbar-range";
-const COST_MODE_KEY = "tokbar-cost-mode";
+
+/** A progress label that stops advancing this long is dropped: a scan
+ *  that dies mid-way never sends its final done === total event. */
+const PROGRESS_STALE_MS = 10_000;
 
 function loadRange(): RangeKey {
   const v = localStorage.getItem(RANGE_KEY);
   return RANGES.some((r) => r.id === v) ? (v as RangeKey) : "30d";
 }
 
-function loadCostMode(): CostMode {
-  const v = localStorage.getItem(COST_MODE_KEY);
-  return v === "auto" || v === "calculate" || v === "display" ? v : "auto";
-}
-
 function App() {
   const { t } = useI18n();
   const [page, setPage] = useState<Page>("overview");
   const [range, setRange] = useState<RangeKey>(loadRange);
-  const [costMode, setCostMode] = useState<CostMode>(loadCostMode);
+  // Backend-owned (it also drives the menu-bar title); the main window
+  // migrates the old localStorage copy once. Null until first read.
+  const { mode: costMode, setMode: setCostMode } = useCostMode({
+    migrate: true,
+  });
+  const dayKey = useDayKey();
   const [refreshKey, setRefreshKey] = useState(0);
   const [scanning, setScanning] = useState(false);
   const [lastScan, setLastScan] = useState<ScanStats | null>(null);
@@ -105,33 +112,59 @@ function App() {
   } | null>(null);
 
   const [justRefreshed, setJustRefreshed] = useState<ScanStats | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const feedbackTimer = useRef<number | undefined>(undefined);
+  const progressTimer = useRef<number | undefined>(undefined);
+
+  const clearProgress = useCallback(() => {
+    window.clearTimeout(progressTimer.current);
+    setScanProgress(null);
+  }, []);
 
   // `feedback` is true only for the manual button: the file watcher keeps
   // data current, so a manual scan usually finds nothing and finishes in
   // milliseconds — without a minimum spin and a result label the click
   // looks like a no-op.
-  const refresh = useCallback(async (feedback = false) => {
-    setScanning(true);
-    try {
-      const [stats] = await Promise.all([
-        api.refreshData(),
-        feedback ? new Promise((r) => setTimeout(r, 500)) : null,
-      ]);
-      setLastScan(stats);
-      setRefreshKey((k) => k + 1);
-      if (feedback) {
-        setJustRefreshed(stats);
-        setTimeout(() => setJustRefreshed(null), 2500);
+  const refresh = useCallback(
+    async (feedback = false) => {
+      setScanning(true);
+      setRefreshError(null);
+      try {
+        const [stats] = await Promise.all([
+          api.refreshData(),
+          feedback ? new Promise((r) => setTimeout(r, 500)) : null,
+        ]);
+        setLastScan(stats);
+        setRefreshKey((k) => k + 1);
+        if (feedback) {
+          setJustRefreshed(stats);
+          window.clearTimeout(feedbackTimer.current);
+          feedbackTimer.current = window.setTimeout(
+            () => setJustRefreshed(null),
+            2500,
+          );
+        }
+      } catch (e) {
+        console.error("refresh failed:", e);
+        // Surfaced on the refresh button (label + tooltip with the cause).
+        setJustRefreshed(null);
+        setRefreshError(String(e));
+        window.clearTimeout(feedbackTimer.current);
+        feedbackTimer.current = window.setTimeout(
+          () => setRefreshError(null),
+          6000,
+        );
+      } finally {
+        setScanning(false);
+        // Success or failure, this scan is over: never leave "Scanning
+        // 32/100" behind.
+        clearProgress();
       }
-    } catch (e) {
-      console.error("refresh failed:", e);
-    } finally {
-      setScanning(false);
-    }
-  }, []);
+    },
+    [clearProgress],
+  );
 
   useEffect(() => localStorage.setItem(RANGE_KEY, range), [range]);
-  useEffect(() => localStorage.setItem(COST_MODE_KEY, costMode), [costMode]);
 
   // Initial scan on launch. Live updates arrive via the backend file
   // watcher ("usage-updated"); a 5-minute rescan remains as a fallback,
@@ -142,13 +175,35 @@ function App() {
     const timer = setInterval(() => {
       if (!document.hidden) refresh();
     }, 300_000);
+    // While hidden, live updates only mark the data dirty; one refetch
+    // happens when the window is shown again.
+    let dirty = false;
+    const onVisibility = () => {
+      if (!document.hidden && dirty) {
+        dirty = false;
+        setRefreshKey((k) => k + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     const unlistenUpdate = onEvent("usage-updated", () => {
-      setRefreshKey((k) => k + 1);
+      // Emitted after a scan finished (or on re-pricing / midnight).
+      clearProgress();
+      if (document.hidden) dirty = true;
+      else setRefreshKey((k) => k + 1);
     });
     const unlistenProgress = onEvent<{ done: number; total: number }>(
       "scan-progress",
       (e) => {
-        setScanProgress(e.payload.done >= e.payload.total ? null : e.payload);
+        window.clearTimeout(progressTimer.current);
+        if (e.payload.done >= e.payload.total) {
+          setScanProgress(null);
+          return;
+        }
+        setScanProgress(e.payload);
+        progressTimer.current = window.setTimeout(
+          () => setScanProgress(null),
+          PROGRESS_STALE_MS,
+        );
       },
     );
     // Deep links from the quick panel's stat cards.
@@ -159,15 +214,23 @@ function App() {
     });
     return () => {
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
       unlistenUpdate.then((fn) => fn());
       unlistenProgress.then((fn) => fn());
       unlistenNav.then((fn) => fn());
+      window.clearTimeout(feedbackTimer.current);
+      window.clearTimeout(progressTimer.current);
     };
-  }, [refresh]);
+  }, [refresh, clearProgress]);
 
-  const params: QueryParams = useMemo(
-    () => ({ sinceMs: rangeToSinceMs(range), costMode }),
-    [range, costMode],
+  // Range bounds are recomputed on every refetch (refreshKey) and when
+  // the local day rolls over (dayKey), never frozen at selection time:
+  // after midnight "Today" must not include yesterday, and 7D/30D/90D
+  // must not grow a day. Pages key their fetches on the resulting
+  // primitive values, so an unchanged bound costs nothing.
+  const params: QueryParams | null = useMemo(
+    () => (costMode ? { sinceMs: rangeToSinceMs(range), costMode } : null),
+    [range, costMode, dayKey, refreshKey],
   );
 
   const showRange = page !== "blocks" && page !== "settings";
@@ -234,6 +297,7 @@ function App() {
                   <button
                     key={r.id}
                     onClick={() => setRange(r.id)}
+                    aria-pressed={range === r.id}
                     className={cn(
                       "rounded-md px-3 py-1 text-xs font-medium transition-colors",
                       range === r.id
@@ -251,33 +315,48 @@ function App() {
               size="sm"
               onClick={() => refresh(true)}
               disabled={scanning}
+              title={refreshError && !scanning ? refreshError : undefined}
               className="min-w-24"
             >
-              {justRefreshed && !scanning ? (
+              {refreshError && !scanning ? (
+                <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
+              ) : justRefreshed && !scanning ? (
                 <Check className="h-3.5 w-3.5 text-primary" />
               ) : (
                 <RefreshCw
                   className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
                 />
               )}
-              {scanProgress
-                ? t("app.scanProgress", {
-                    done: scanProgress.done,
-                    total: scanProgress.total,
-                  })
-                : scanning
-                  ? t("app.scanning")
-                  : justRefreshed
-                    ? justRefreshed.entriesInserted > 0
-                      ? t("app.refreshed", { n: justRefreshed.entriesInserted })
-                      : t("app.upToDate")
-                    : t("app.refresh")}
+              <span aria-live="polite">
+                {scanProgress
+                  ? t("app.scanProgress", {
+                      done: scanProgress.done,
+                      total: scanProgress.total,
+                    })
+                  : scanning
+                    ? t("app.scanning")
+                    : refreshError
+                      ? t("app.refreshFailed")
+                      : justRefreshed
+                        ? justRefreshed.entriesInserted > 0
+                          ? t("app.refreshed", {
+                              n: justRefreshed.entriesInserted,
+                            })
+                          : t("app.upToDate")
+                        : t("app.refresh")}
+              </span>
             </Button>
           </div>
         </header>
 
         <main className="flex-1 overflow-y-auto p-6">
           <Suspense fallback={<Skeleton className="h-80" />}>
+          {/* Every page prices with the backend cost mode: wait for it
+              (one quick IPC read) rather than fetch twice. */}
+          {!params || !costMode ? (
+            <Skeleton className="h-80" />
+          ) : (
+          <>
           {page === "overview" && (
             <OverviewPage
               params={params}
@@ -307,6 +386,8 @@ function App() {
               onCostModeChange={setCostMode}
               lastScan={lastScan}
             />
+          )}
+          </>
           )}
           </Suspense>
         </main>

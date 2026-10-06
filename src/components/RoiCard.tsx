@@ -1,19 +1,66 @@
-import { TrendingUp } from "lucide-react";
+import { AlertTriangle, TrendingUp } from "lucide-react";
 import type { AgentBreakdown } from "@/lib/api";
 import { agentLabel, formatCost } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { useSubscriptions } from "@/lib/subscriptions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { BrandIcon, subscriptionBrand } from "@/components/BrandIcon";
 import { cn } from "@/lib/utils";
 
 /** "Your flat-rate plans would cost $X at API prices" — the ROI hero card.
  *  `monthByAgent` must be this calendar month's usage priced in `calculate`
- *  mode (API rates), so each agent's `.cost` is its API-priced value. */
-export function RoiCard({ monthByAgent }: { monthByAgent: AgentBreakdown[] }) {
+ *  mode (API rates), so each agent's `.cost` is its API-priced value; null
+ *  while loading. `failed` shows an error instead of a fake $0. */
+export function RoiCard({
+  monthByAgent,
+  failed = false,
+  onRetry,
+}: {
+  monthByAgent: AgentBreakdown[] | null;
+  failed?: boolean;
+  onRetry?: () => void;
+}) {
   const { t, lang } = useI18n();
   const { subscriptions } = useSubscriptions();
   if (subscriptions.length === 0) return null;
+
+  if (failed || !monthByAgent) {
+    return (
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0">
+          <CardTitle className="flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-primary" />
+            {t("roi.title")}
+          </CardTitle>
+          <span className="text-xs text-muted-foreground">
+            {t("roi.subtitle")}
+          </span>
+        </CardHeader>
+        <CardContent>
+          {failed ? (
+            <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+              <span className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4" />
+                {t("common.loadFailed")}
+              </span>
+              {onRetry && (
+                <Button variant="outline" size="sm" onClick={onRetry}>
+                  {t("common.retry")}
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <Skeleton className="h-9 w-40" />
+              <Skeleton className="h-2" />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
 
   const apiByAgent = new Map(monthByAgent.map((a) => [a.agent, a.cost]));
   // When several plans cover the same agent (e.g. two ChatGPT Pro seats

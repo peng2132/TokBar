@@ -7,6 +7,8 @@ import type {
   Block,
   CostMode,
   DailyRow,
+  LatestPerformance,
+  ModelPerformance,
   ModelRow,
   Overview,
   PricingStatus,
@@ -173,6 +175,11 @@ function overview(rows: DailyRow[]): Overview {
   return {
     totals,
     byAgent: [...byAgent.values()].sort((x, y) => y.cost - x.cost),
+    codexPricing: {
+      returned: 0,
+      sent: 0,
+      estimated: byAgent.get("codex")?.requests ?? 0,
+    },
   };
 }
 
@@ -407,6 +414,44 @@ function sources(): SourceInfo[] {
 let trayMode = "cost";
 let notchEnabled = true;
 
+const latestPerformance = {
+  source: "codex",
+  provider: "",
+  model: "gpt-5.2-codex",
+  timestampMs: startOfToday() - 3 * 60 * 60 * 1000,
+  outputTps: 64.2,
+} satisfies LatestPerformance;
+
+const modelPerformance: ModelPerformance[] = [
+  {
+    source: "magpie",
+    provider: "Anthropic",
+    model: "claude-sonnet-4-5-20250929",
+    outputTps: 82.4,
+    outputSamples: 18,
+    firstTokenMs: 760,
+    firstTokenSamples: 21,
+  },
+  {
+    source: "codex",
+    provider: "",
+    model: "gpt-5.2-codex",
+    outputTps: 61.8,
+    outputSamples: 24,
+    firstTokenMs: 2170,
+    firstTokenSamples: 32,
+  },
+  {
+    source: "codex",
+    provider: "",
+    model: "codex-mini-preview",
+    outputTps: null,
+    outputSamples: 0,
+    firstTokenMs: 485,
+    firstTokenSamples: 2,
+  },
+];
+
 export async function mockInvoke<T>(
   cmd: string,
   args?: Record<string, unknown>,
@@ -430,6 +475,16 @@ export async function mockInvoke<T>(
       return hourly() as T;
     case "get_models":
       return models(filtered(args)) as T;
+    case "get_model_performance": {
+      const since = args?.sinceMs as number | undefined;
+      const until = args?.untilMs as number | undefined;
+      const ts = latestPerformance.timestampMs;
+      return (ts >= (since ?? -Infinity) && ts < (until ?? Infinity)
+        ? modelPerformance
+        : []) as T;
+    }
+    case "get_latest_performance":
+      return latestPerformance as T;
     case "get_sessions":
       return sessions(args) as T;
     case "get_projects":

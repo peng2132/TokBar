@@ -3,20 +3,21 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium transition-[color,background-color,border-color,transform] duration-150 active:scale-[0.97] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 cursor-pointer",
+  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-transparent text-sm font-medium transition-[color,background-color,box-shadow] disabled:pointer-events-none disabled:opacity-60 [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default:
+          "border-primary bg-primary text-primary-foreground shadow-[inset_0_1px_0_rgb(255_255_255/18%)] hover:bg-primary/90 active:shadow-none",
         secondary: "bg-muted text-foreground hover:bg-muted/70",
         ghost: "hover:bg-accent text-muted-foreground hover:text-foreground",
         outline:
-          "border border-border bg-transparent hover:bg-accent text-foreground",
+          "border-input bg-card text-foreground shadow-[var(--control-shadow)] hover:bg-accent/50 active:shadow-none",
       },
       size: {
-        default: "h-9 px-4 py-2",
+        default: "h-9 px-3",
         sm: "h-8 px-3 text-xs",
-        icon: "h-9 w-9",
+        icon: "size-8",
       },
     },
     defaultVariants: {
@@ -33,6 +34,8 @@ export interface ButtonProps
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, ...props }, ref) => (
     <button
+      type="button"
+      data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       ref={ref}
       {...props}

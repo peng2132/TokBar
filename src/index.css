@@ -1,52 +1,72 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/inter-latin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-  --background: oklch(0.145 0.004 285);
-  --foreground: oklch(0.96 0.002 285);
-  --card: oklch(0.185 0.005 285);
-  --card-foreground: oklch(0.96 0.002 285);
-  --muted: oklch(0.24 0.006 285);
-  --muted-foreground: oklch(0.66 0.01 285);
-  --border: oklch(0.27 0.008 285);
-  --primary: oklch(0.72 0.15 50);
-  --primary-foreground: oklch(0.14 0.004 285);
-  --accent: oklch(0.24 0.006 285);
-  --ring: oklch(0.72 0.15 50);
+  color-scheme: light;
+  --background: #f8f9fb;
+  --sidebar: #f0f2f6;
+  --foreground: #1b202b;
+  --card: #fff;
+  --card-foreground: var(--foreground);
+  --muted: #eef0f4;
+  --muted-foreground: #5e6676;
+  --border: #e2e5ec;
+  --input: #d4d9e3;
+  --accent: #e9edf4;
+  --primary: #3256cf;
+  --primary-foreground: #fff;
+  --ring: #3256cf;
+  --success: #06714e;
+  --success-surface: #e6f5ed;
+  --warning: #8b520d;
+  --warning-surface: #fff2dc;
+  --danger: #b12a43;
+  --danger-surface: #fff0f2;
+  --info: #2757a5;
+  --info-surface: #ecf3ff;
+  --control-shadow:
+    0 1px 1px rgb(24 32 50 / 7%), inset 0 1px 0 rgb(255 255 255 / 45%);
 }
 
-/* Light theme (toggled by ThemeProvider on <html>) */
-html.light {
-  --background: oklch(0.975 0.002 285);
-  --foreground: oklch(0.21 0.006 285);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.006 285);
-  --muted: oklch(0.93 0.003 285);
-  --muted-foreground: oklch(0.5 0.01 285);
-  --border: oklch(0.89 0.004 285);
-  --accent: oklch(0.94 0.003 285);
+html.dark {
+  color-scheme: dark;
+  --background: #181a1f;
+  --sidebar: #14161a;
+  --foreground: #eef0f5;
+  --card: #202228;
+  --muted: #282b34;
+  --muted-foreground: #a5adbd;
+  --border: #343842;
+  --input: #414653;
+  --accent: #2e323c;
+  --primary: #9aadff;
+  --primary-foreground: #151c35;
+  --ring: #9aadff;
+  --success: #7ce0b7;
+  --success-surface: #20392f;
+  --warning: #f5c478;
+  --warning-surface: #3c3021;
+  --danger: #ff9bae;
+  --danger-surface: #3e282f;
+  --info: #a8c5ff;
+  --info-surface: #283550;
+  --control-shadow:
+    0 1px 1px rgb(0 0 0 / 20%), inset 0 1px 0 rgb(255 255 255 / 6%);
 }
 
-/* macOS material layering: the window itself is transparent and an
-   NSVisualEffectView (sidebar material, set in tauri.macos.conf.json)
-   blurs the desktop behind it. The webview then paints translucent
-   washes on top: the sidebar column stays clear (strongest frost), the
-   content column gets a ~82% wash so charts and tables stay legible,
-   and cards/hovers/borders become alpha layers instead of solid steps.
-   Windows/Linux never get the .mac class and keep the solid palette. */
-html.mac {
-  --background: oklch(0.17 0.005 285 / 0.55);
-  --card: oklch(0.3 0.012 285 / 0.4);
-  --muted: oklch(1 0 0 / 0.1);
-  --accent: oklch(1 0 0 / 0.09);
-  --border: oklch(1 0 0 / 0.12);
-}
-html.mac.light {
-  --background: oklch(0.975 0.002 285 / 0.55);
-  --card: oklch(1 0 0 / 0.5);
-  --muted: oklch(0.3 0.01 285 / 0.1);
-  --accent: oklch(0.3 0.01 285 / 0.08);
-  --border: oklch(0 0 0 / 0.09);
-}
 html.mac,
 html.mac body {
   background: transparent;
@@ -54,21 +74,31 @@ html.mac body {
 
 @theme inline {
   --color-background: var(--background);
+  --color-sidebar: var(--sidebar);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-border: var(--border);
+  --color-input: var(--input);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-accent: var(--accent);
   --color-ring: var(--ring);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco,
-    Consolas, monospace;
+  --color-success: var(--success);
+  --color-success-surface: var(--success-surface);
+  --color-warning: var(--warning);
+  --color-warning-surface: var(--warning-surface);
+  --color-danger: var(--danger);
+  --color-danger-surface: var(--danger-surface);
+  --color-info: var(--info);
+  --color-info-surface: var(--info-surface);
+  --font-sans:
+    "Inter Variable", system-ui, -apple-system, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 html,
@@ -84,6 +114,37 @@ body {
   user-select: none;
 }
 
+:where(button, a, input, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  height: 100%;
+}
+
+html.mac .workspace-sidebar {
+  background: color-mix(in srgb, var(--sidebar) 82%, transparent);
+  padding-top: 1.75rem;
+}
+
+html.mac .workspace-header {
+  padding-top: 1.75rem;
+}
+
+@media (width < 981px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  html.mac .workspace-header {
+    padding-top: 0;
+  }
+}
+
 /* Menu-bar quick panel: transparent window, the panel div draws its own
    rounded background. */
 html.quick-panel,
@@ -95,7 +156,7 @@ html.quick-panel body {
    to match the panel (the transparent corners would otherwise be white). */
 html.quick-panel-opaque,
 html.quick-panel-opaque body {
-  background: var(--background);
+  background: var(--card);
 }
 
 /* Notch companion window: fully transparent stage, the black bar draws
@@ -106,12 +167,20 @@ html.notch-window body {
   overflow: hidden;
 }
 
-/* Recharts SVG elements get a default focus ring when clicked — remove it */
-.recharts-wrapper:focus,
-.recharts-wrapper :focus,
-.recharts-surface:focus,
-.recharts-sector:focus {
-  outline: none !important;
+.notch-output {
+  --background: #141414;
+  --foreground: #f5f5f5;
+  --muted-foreground: #b2b2b7;
+  --accent: #27272a;
+  --border: #323235;
+  --primary: #e8e8eb;
+  --ring: #f5f5f5;
+  color: var(--foreground);
+}
+
+/* Keep the keyboard focus ring on charts without showing it on pointer clicks. */
+.recharts-surface:focus:not(:focus-visible) {
+  outline: none;
 }
 
 ::-webkit-scrollbar {
@@ -119,7 +188,7 @@ html.notch-window body {
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--muted);
+  background: var(--input);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-track {

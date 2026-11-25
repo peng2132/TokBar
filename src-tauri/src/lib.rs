@@ -4,6 +4,7 @@ pub mod cost;
 pub mod db;
 #[cfg(target_os = "macos")]
 pub mod notch;
+pub mod performance;
 pub mod pricing;
 pub mod types;
 
@@ -36,8 +37,14 @@ const TRAY_ICON: &[u8] = include_bytes!("../icons/32x32.png");
 /// Online prices older than this are refreshed in the background.
 const PRICING_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 
+#[cfg(target_os = "macos")]
+const SETTINGS_MENU_ID: &str = "open-settings";
+
+#[cfg(target_os = "macos")]
+struct SettingsMenu(MenuItem<tauri::Wry>);
+
 /// User settings persisted to settings.json in the app data dir.
-#[derive(Clone, Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Settings {
     /// Menu bar text when the notch bar is not in use: "cost" | "tokens" | "off"
@@ -78,6 +85,11 @@ struct PricingRuntime {
     last_error: Option<String>,
 }
 
+struct Startup {
+    lock: tauri::async_runtime::Mutex<()>,
+    notch_info: NotchInfo,
+}
+
 struct AppState {
     conn: Mutex<rusqlite::Connection>,
     /// Swapped wholesale on refresh; scans hold their own `Arc`, so
@@ -96,6 +108,21 @@ struct AppState {
 }
 
 impl AppState {
+    fn open(data_dir: PathBuf, notch_info: NotchInfo) -> Result<Self, String> {
+        let conn = db::open(&data_dir.join("tokbar.db"))?;
+        let pricing = PricingMap::load(Some(data_dir.clone()));
+        let settings = load_settings(&data_dir);
+        Ok(Self {
+            conn: Mutex::new(conn),
+            pricing: RwLock::new(Arc::new(pricing)),
+            pricing_rt: Mutex::new(PricingRuntime::default()),
+            cache_dir: data_dir,
+            settings: Mutex::new(settings),
+            scan_lock: Mutex::new(()),
+            notch_info: Mutex::new(notch_info),
+        })
+    }
+
     fn pricing(&self) -> Arc<PricingMap> {
         self.pricing
             .read()
@@ -107,10 +134,15 @@ impl AppState {
         lock(&self.settings).clone()
     }
 
-    fn update_settings(&self, f: impl FnOnce(&mut Settings)) {
-        let mut s = lock(&self.settings);
-        f(&mut s);
-        save_settings(&self.cache_dir, &s);
+    fn update_settings(&self, update: impl FnOnce(&mut Settings)) -> Result<(), String> {
+        let mut current = lock(&self.settings);
+        let mut next = current.clone();
+        update(&mut next);
+        if next != *current {
+            save_settings(&self.cache_dir, &next)?;
+            *current = next;
+        }
+        Ok(())
     }
 
     fn notch_active(&self) -> bool {
@@ -129,10 +161,35 @@ fn load_settings(cache_dir: &Path) -> Settings {
         .unwrap_or_default()
 }
 
-fn save_settings(cache_dir: &Path, settings: &Settings) {
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = std::fs::write(settings_path(cache_dir), json);
+fn save_settings(cache_dir: &Path, settings: &Settings) -> Result<(), String> {
+    let mut file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(file.as_file_mut(), settings).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    // Persist replaces settings.json only after the complete file was written.
+    file.persist(settings_path(cache_dir)).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn initialize_app(app: AppHandle, startup: tauri::State<'_, Startup>) -> Result<(), String> {
+    // The main window and the hidden quick panel can reach this command together.
+    let _initializing = startup.lock.lock().await;
+    if app.try_state::<AppState>().is_some() {
+        return Ok(());
     }
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let notch_info = startup.notch_info;
+    let state = tauri::async_runtime::spawn_blocking(move || AppState::open(data_dir, notch_info))
+        .await
+        .map_err(|e| e.to_string())??;
+    app.manage(state);
+    sync_notch_window(&app);
+    let tray_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || update_tray_title(&tray_app));
+    spawn_pricing_auto_refresh(app.clone());
+    spawn_usage_watcher(app.clone());
+    spawn_clock_and_display_monitor(app);
+    Ok(())
 }
 
 fn format_tokens_short(n: i64) -> String {
@@ -226,12 +283,12 @@ fn update_tray_title(app: &AppHandle) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_tray_mode(app: AppHandle, state: tauri::State<AppState>, mode: String) -> Result<(), String> {
     if !matches!(mode.as_str(), "cost" | "tokens" | "off") {
         return Err(format!("invalid tray mode: {mode}"));
     }
-    state.update_settings(|s| s.tray_mode = mode);
+    state.update_settings(|s| s.tray_mode = mode)?;
     update_tray_title(&app);
     Ok(())
 }
@@ -246,23 +303,27 @@ fn get_cost_mode(state: tauri::State<AppState>) -> String {
     state.settings().cost_mode
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_cost_mode(app: AppHandle, state: tauri::State<AppState>, mode: String) -> Result<(), String> {
     if !matches!(mode.as_str(), "auto" | "calculate" | "display") {
         return Err(format!("invalid cost mode: {mode}"));
     }
-    state.update_settings(|s| s.cost_mode = mode.clone());
-    update_tray_title(&app);
+    state.update_settings(|s| s.cost_mode = mode.clone())?;
     let _ = app.emit("cost-mode-changed", mode);
+    update_tray_title(&app);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_language(app: AppHandle, state: tauri::State<AppState>, lang: String) -> Result<(), String> {
     if !matches!(lang.as_str(), "en" | "zh") {
         return Err(format!("invalid language: {lang}"));
     }
-    state.update_settings(|s| s.language = lang);
+    state.update_settings(|s| s.language.clone_from(&lang))?;
+    #[cfg(target_os = "macos")]
+    if let Some(menu) = app.try_state::<SettingsMenu>() {
+        let _ = menu.0.set_text(if lang == "zh" { "设置…" } else { "Settings…" });
+    }
     update_tray_title(&app);
     Ok(())
 }
@@ -277,9 +338,9 @@ fn get_notch_enabled(state: tauri::State<AppState>) -> bool {
     state.settings().notch_enabled
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_notch_enabled(app: AppHandle, state: tauri::State<AppState>, enabled: bool) -> Result<(), String> {
-    state.update_settings(|s| s.notch_enabled = enabled);
+    state.update_settings(|s| s.notch_enabled = enabled)?;
     sync_notch_window(&app);
     update_tray_title(&app);
     Ok(())
@@ -564,6 +625,22 @@ fn get_models(
 }
 
 #[tauri::command(async)]
+fn get_model_performance(
+    state: tauri::State<AppState>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+) -> Result<Vec<performance::ModelPerformance>, String> {
+    performance::models(&lock(&state.conn), since_ms, until_ms).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+fn get_latest_performance(
+    state: tauri::State<AppState>,
+) -> Result<Option<performance::LatestPerformance>, String> {
+    performance::latest(&lock(&state.conn)).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
 fn get_sessions(
     state: tauri::State<AppState>,
     since_ms: Option<i64>,
@@ -653,7 +730,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     // Hidden frameless popover window, shown next to the tray icon on click.
     let quick = WebviewWindowBuilder::new(app, "quick", WebviewUrl::App("index.html".into()))
         .title("TokBar")
-        .inner_size(360.0, 460.0)
+        .inner_size(360.0, 510.0)
         .decorations(false)
         .resizable(false)
         .always_on_top(true)
@@ -721,50 +798,52 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
-        ))
+        ));
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(|app| {
+            let menu = Menu::default(app)?;
+            let settings = MenuItem::with_id(app, SETTINGS_MENU_ID, "Settings…", true, Some("Cmd+,"))?;
+            if let Some(submenu) = menu.items()?.first().and_then(|item| item.as_submenu()) {
+                submenu.insert(&settings, 2)?;
+                app.manage(SettingsMenu(settings));
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == SETTINGS_MENU_ID {
+                show_main_window(app.clone());
+                let _ = app.emit_to("main", "navigate-page", "settings");
+            }
+        });
+
+    let app = builder
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
-            let conn = db::open(&data_dir.join("tokbar.db")).expect("failed to open database");
-            let pricing = PricingMap::load(Some(data_dir.clone()));
-            let settings = load_settings(&data_dir);
             #[cfg(target_os = "macos")]
-            let notch_info = notch::detect(
-                objc2::MainThreadMarker::new()
-                    .expect("tauri setup runs on the main thread"),
-            );
+            let notch_info = objc2::MainThreadMarker::new()
+                .map(notch::detect)
+                .unwrap_or_default();
             #[cfg(not(target_os = "macos"))]
             let notch_info = NotchInfo::default();
-            app.manage(AppState {
-                conn: Mutex::new(conn),
-                pricing: RwLock::new(Arc::new(pricing)),
-                pricing_rt: Mutex::new(PricingRuntime::default()),
-                cache_dir: data_dir,
-                settings: Mutex::new(settings),
-                scan_lock: Mutex::new(()),
-                notch_info: Mutex::new(notch_info),
+            app.manage(Startup {
+                lock: tauri::async_runtime::Mutex::new(()),
+                notch_info,
             });
             setup_tray(app)?;
-            sync_notch_window(app.handle());
-            update_tray_title(app.handle());
-            spawn_pricing_auto_refresh(app.handle().clone());
-            spawn_usage_watcher(app.handle().clone());
-            spawn_clock_and_display_monitor(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            // Menu-bar app behavior: closing the main window hides it,
-            // the app keeps running in the tray (quit via tray menu).
             tauri::WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
                 api.prevent_close();
+                #[cfg(target_os = "windows")]
+                window.app_handle().exit(0);
+                #[cfg(not(target_os = "windows"))]
                 let _ = window.hide();
             }
             // The quick popover hides itself when it loses focus.
@@ -774,6 +853,7 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            initialize_app,
             refresh_data,
             show_main_window,
             set_tray_mode,
@@ -792,11 +872,72 @@ pub fn run() {
             get_daily,
             get_hourly,
             get_models,
+            get_model_performance,
+            get_latest_performance,
             get_sessions,
             get_projects,
             get_blocks,
             get_sources
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|handle, event| {
+        #[cfg(target_os = "macos")]
+        if matches!(event, tauri::RunEvent::Reopen { .. }) {
+            show_main_window(handle.clone());
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (handle, event);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_data_dir() -> tempfile::TempDir {
+        match std::env::var_os("SSD_DEV_TMP_DIR") {
+            Some(path) => tempfile::tempdir_in(path),
+            None => tempfile::tempdir(),
+        }
+        .unwrap()
+    }
+
+    #[test]
+    fn failed_settings_save_keeps_current_mode() {
+        let dir = test_data_dir();
+        let state = AppState::open(dir.path().into(), NotchInfo::default()).unwrap();
+        std::fs::create_dir(settings_path(dir.path())).unwrap();
+
+        assert!(state.update_settings(|settings| settings.cost_mode = "display".into()).is_err());
+
+        assert_eq!(state.settings().cost_mode, "auto");
+    }
+
+    #[test]
+    fn successful_settings_save_replaces_previous_file() {
+        let dir = test_data_dir();
+        let state = AppState::open(dir.path().into(), NotchInfo::default()).unwrap();
+        state.update_settings(|settings| settings.tray_mode = "tokens".into()).unwrap();
+        state.update_settings(|settings| settings.cost_mode = "display".into()).unwrap();
+
+        let saved = load_settings(dir.path());
+        assert_eq!(saved.tray_mode, "tokens");
+        assert_eq!(saved.cost_mode, "display");
+        assert_eq!(state.settings().cost_mode, saved.cost_mode);
+    }
+
+    #[test]
+    fn startup_can_retry_after_a_database_open_error() {
+        let dir = test_data_dir();
+        let database = dir.path().join("tokbar.db");
+        let invalid = b"Not a SQLite database";
+        std::fs::write(&database, invalid).unwrap();
+
+        assert!(AppState::open(dir.path().into(), NotchInfo::default()).is_err());
+        assert_eq!(std::fs::read(&database).unwrap(), invalid);
+
+        std::fs::remove_file(&database).unwrap();
+        assert!(AppState::open(dir.path().into(), NotchInfo::default()).is_ok());
+    }
 }

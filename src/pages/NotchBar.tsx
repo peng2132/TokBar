@@ -12,6 +12,7 @@ import {
 } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { useTodayStats } from "@/lib/useTodayStats";
+import { LatestOutput } from "@/components/LatestOutput";
 
 /** At rest the bar IS the notch: just a thin margin so the corners blend.
  *  Mirrors WING in src-tauri/src/notch.rs. */
@@ -241,6 +242,7 @@ export function NotchBar() {
   if (!info || !info.hasNotch) return null;
 
   const block = stats?.activeBlock ?? null;
+  const speed = stats?.latestPerformance;
   const blockPct = block
     ? Math.min(
         100,
@@ -413,16 +415,16 @@ export function NotchBar() {
             }}
           >
             {/* Hero: today's numbers, each deep-linking into the app. */}
-            <div className="flex items-end justify-between px-0.5 pt-1.5">
+            <div className="flex items-end justify-between px-0.5 pt-2">
               <button
                 type="button"
                 onClick={() => openPage("overview")}
                 className="-m-1.5 rounded-xl p-1.5 text-left transition-colors hover:bg-white/5"
               >
-                <div className="text-[11px] font-medium text-white/45">
+                <div className="text-[11px] font-medium text-white/60">
                   {t("quick.todayCost")}
                 </div>
-                <div className="mt-1.5 text-[30px] font-semibold leading-none tracking-tight tabular-nums">
+                <div className="mt-1.5 text-[32px] font-semibold leading-none tracking-[-0.045em] tabular-nums">
                   {stats ? formatCost(stats.todayCost) : "—"}
                 </div>
               </button>
@@ -432,7 +434,7 @@ export function NotchBar() {
                   onClick={() => openPage("models")}
                   className="-my-1 rounded-lg px-1.5 py-1 transition-colors hover:bg-white/5"
                 >
-                  <div className="text-[10px] font-medium text-white/45">
+                  <div className="text-[10px] font-medium text-white/60">
                     {t("quick.todayTokens")}
                   </div>
                   <div className="mt-1 text-[14px] font-semibold tabular-nums text-white/90">
@@ -444,7 +446,7 @@ export function NotchBar() {
                   onClick={() => openPage("sessions")}
                   className="-my-1 rounded-lg px-1.5 py-1 transition-colors hover:bg-white/5"
                 >
-                  <div className="text-[10px] font-medium text-white/45">
+                  <div className="text-[10px] font-medium text-white/60">
                     {t("quick.todayRequests")}
                   </div>
                   <div className="mt-1 text-[14px] font-semibold tabular-nums text-white/90">
@@ -453,6 +455,10 @@ export function NotchBar() {
                 </button>
               </div>
             </div>
+
+            {speed && (
+              <LatestOutput sample={speed} onClick={() => void openPage("models")} className="notch-output mt-3.5" />
+            )}
 
             {/* Load failure: the last good numbers stay, flagged. */}
             {error && (
@@ -473,11 +479,11 @@ export function NotchBar() {
 
             {/* One overview card: today's rhythm + agent split, divided
                 by a hairline — grouped, not floating on bare black. */}
-            <div className="mt-4 rounded-2xl bg-white/[0.06] p-3.5">
-              <div className="flex items-center justify-between text-[11px] font-medium text-white/45">
-                <span>{t("notch.rhythm")}</span>
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.045] p-3.5">
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <h2 className="font-semibold text-white/85">{t("notch.rhythm")}</h2>
                 {hourlyMax > 0 && (
-                  <span className="tabular-nums text-white/35">
+                  <span className="tabular-nums text-white/60">
                     {t("notch.peak")} {formatCost(hourlyMax)}
                   </span>
                 )}
@@ -506,7 +512,7 @@ export function NotchBar() {
                   );
                 })}
               </div>
-              <div className="mt-1.5 flex justify-between text-[9px] font-medium tabular-nums text-white/25">
+              <div className="mt-1.5 flex justify-between text-[11px] font-medium tabular-nums text-white/60">
                 <span>0</span>
                 <span>6</span>
                 <span>12</span>
@@ -554,7 +560,7 @@ export function NotchBar() {
             <button
               type="button"
               onClick={() => openPage("blocks")}
-              className="mt-2.5 w-full rounded-2xl bg-white/[0.06] p-3.5 text-left transition-colors hover:bg-white/[0.09]"
+              className="mt-2.5 w-full rounded-2xl border border-white/10 bg-white/[0.045] p-3.5 text-left transition-colors hover:bg-white/[0.09]"
             >
               {block ? (
                 <>
@@ -595,7 +601,7 @@ export function NotchBar() {
                   </div>
                 </>
               ) : (
-                <div className="flex h-[52px] items-center justify-center text-[12px] text-white/40">
+                <div className="flex h-[52px] items-center justify-center text-xs text-white/60">
                   {t("quick.noActiveBlock")}
                 </div>
               )}

@@ -55,6 +55,15 @@ pub struct AgentBreakdown {
 pub struct Overview {
     pub totals: Totals,
     pub by_agent: Vec<AgentBreakdown>,
+    pub codex_pricing: CodexPricing,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexPricing {
+    pub returned: i64,
+    pub sent: i64,
+    pub estimated: i64,
 }
 
 pub fn overview(
@@ -114,7 +123,22 @@ pub fn overview(
         .filter_map(Result::ok)
         .collect();
 
-    Ok(Overview { totals, by_agent })
+    let codex_pricing = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(CASE WHEN g.returned = 1 THEN 1 END),
+                        COUNT(CASE WHEN g.returned = 0 THEN 1 END),
+                        COUNT(*) - COUNT(g.returned)
+                 FROM entries e
+                 LEFT JOIN codex_responses r ON r.usage_key = e.dedup_key AND r.applied_entry_id = e.id
+                 LEFT JOIN magpie_request_tiers g ON g.response_id = r.response_id AND g.tier = r.applied_tier
+                 WHERE e.agent = 'codex' AND {range}"
+            ),
+            [],
+            |r| Ok(CodexPricing { returned: r.get(0)?, sent: r.get(1)?, estimated: r.get(2)? }),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(Overview { totals, by_agent, codex_pricing })
 }
 
 #[derive(Debug, Serialize)]

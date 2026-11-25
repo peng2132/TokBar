@@ -42,6 +42,8 @@ It is not a chat client. It is the dashboard for where your tokens and money go,
 - **Multi-agent**: Claude Code, Codex CLI and Kimi CLI out of the box, with an adapter architecture ready for more
 - **Accurate costs**: long-context pricing (the whole request above 200K/272K/512K, as vendors bill it), 5m/1h cache-write pricing, cache-read discounts, fast/priority tier rates, dated list-price changes, DeepSeek off-peak rates — and stored costs are re-priced automatically when prices change
 - **Menu bar ticker**: today's cost or token count right next to the clock
+- **Generation performance**: latest output speed (tok/s) in the menu bar popover, with median speed, time to first token, and sample counts on the Models page. Codex uses timed visible messages and turn-start latency. Installed Magpie contributes timed gateway requests by provider through its local `usage.jsonl`.
+- **Prompt cache hit rate**: cache reads as a share of all recorded prompt tokens, including cache writes
 - **5-hour billing blocks**: each agent's usage grouped into hour-aligned 5-hour windows (Claude's and Codex's usage windows), with live burn rate
 - **Trends & breakdowns**: daily/weekly/monthly charts by agent, model, and token type
 - **Local & private**: everything is parsed and stored locally in SQLite; nothing leaves your machine
@@ -71,6 +73,8 @@ It is not a chat client. It is the dashboard for where your tokens and money go,
 
 Sources with no local data are detected automatically and simply stay empty. Adding another agent is one file in `src-tauri/src/adapters/`.
 
+TokBar reads timing and service tiers from `~/.config/magpie/usage.jsonl` (or `$XDG_CONFIG_HOME/magpie/usage.jsonl`). When a Codex record has the same response ID, TokBar prices it using the tier returned by the provider, or the tier sent by Magpie if the response omits it. Unmatched Codex records keep an estimated tier. Speed is shown for completed responses with sufficient output and timing data.
+
 ## Install
 
 Download the latest installer from [**Releases**](https://github.com/peng2132/TokBar/releases):
@@ -78,7 +82,7 @@ Download the latest installer from [**Releases**](https://github.com/peng2132/To
 - **macOS**: `*_aarch64.dmg` (Apple Silicon) or `*_x64.dmg` (Intel)
 - **Windows**: `*_x64-setup.exe` or `*.msi`
 
-> Builds are currently unsigned. On macOS, if you see "TokBar is damaged", run `xattr -cr /Applications/TokBar.app` once. On Windows, click "More info", then "Run anyway" on the SmartScreen prompt.
+> The macOS release workflow uses Developer ID signing and Apple notarization. New Windows release installers are published after Authenticode verification. When Windows signing is unavailable, the corresponding Actions run provides unsigned test installers.
 
 ## Accuracy
 
@@ -134,6 +138,7 @@ Data flow: on launch (and every 60s) incrementally scan log directories → pars
 ## Credits
 
 - [ccusage](https://github.com/ryoppippi/ccusage): TokBar's parsing and billing logic is ported from this project
+- Generation speed, first-token latency, and cache-hit metrics were inspired by [Magpie](https://github.com/yetone/magpie).
 - [Tauri](https://tauri.app) · [LiteLLM](https://github.com/BerriAI/litellm) (pricing data) · [Recharts](https://recharts.org)
 - Special thanks to the [LinuxDO](https://linux.do/) community for their recognition and support.
 

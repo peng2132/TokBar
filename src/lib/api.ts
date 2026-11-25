@@ -49,6 +49,7 @@ export interface AgentBreakdown {
 export interface Overview {
   totals: Totals;
   byAgent: AgentBreakdown[];
+  codexPricing: { returned: number; sent: number; estimated: number };
 }
 
 export interface DailyRow {
@@ -75,6 +76,24 @@ export interface ModelRow {
   /** False when no price is known for the model: its cost is $0 and
    *  unreliable, not free. */
   priced: boolean;
+}
+
+export interface ModelPerformance {
+  source: string;
+  model: string;
+  provider: string;
+  outputTps: number | null;
+  outputSamples: number;
+  firstTokenMs: number | null;
+  firstTokenSamples: number;
+}
+
+export interface LatestPerformance {
+  source: string;
+  model: string;
+  provider: string;
+  timestampMs: number;
+  outputTps: number;
 }
 
 export interface SessionRow {
@@ -176,12 +195,16 @@ export function rangeToSinceMs(
 }
 
 export const api = {
+  initializeApp: () => call<void>("initialize_app"),
   refreshData: () => call<ScanStats>("refresh_data"),
   getOverview: (p: QueryParams) => call<Overview>("get_overview", { ...p }),
   getDaily: (p: QueryParams) => call<DailyRow[]>("get_daily", { ...p }),
   /** Same row shape as getDaily, bucketed by local hour ("HH:00"). */
   getHourly: (p: QueryParams) => call<DailyRow[]>("get_hourly", { ...p }),
   getModels: (p: QueryParams) => call<ModelRow[]>("get_models", { ...p }),
+  getModelPerformance: ({ sinceMs, untilMs }: QueryParams) =>
+    call<ModelPerformance[]>("get_model_performance", { sinceMs, untilMs }),
+  getLatestPerformance: () => call<LatestPerformance | null>("get_latest_performance"),
   getSessions: (p: QueryParams & { limit?: number }) =>
     call<SessionRow[]>("get_sessions", { ...p }),
   getProjects: (p: QueryParams & { limit?: number }) =>

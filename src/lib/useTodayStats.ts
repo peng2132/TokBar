@@ -5,6 +5,7 @@ import {
   type AgentBreakdown,
   type Block,
   type CostMode,
+  type LatestPerformance,
 } from "./api";
 import { blockLookbackSinceMs, pickActiveBlock } from "./blocks";
 import { useCostMode } from "./costMode";
@@ -23,6 +24,7 @@ export interface TodayStats {
   hourly: number[] | null;
   /** Active block of the most recently active agent (blocks are per agent). */
   activeBlock: Block | null;
+  latestPerformance: LatestPerformance | null;
 }
 
 interface Options {
@@ -43,12 +45,14 @@ async function fetchTodayStats(
   // Bounds are computed per fetch, so a load after midnight is "today".
   const now = new Date();
   const today = startOfToday(now);
-  const [overview, monthOverview, blocks, hourlyRows] = await Promise.all([
-    api.getOverview({ sinceMs: today, costMode }),
-    month ? api.getOverview({ sinceMs: startOfMonth(now), costMode }) : null,
-    api.getBlocks({ sinceMs: blockLookbackSinceMs(now.getTime()), costMode }),
-    hourly ? api.getHourly({ sinceMs: today, costMode }) : null,
-  ]);
+  const [overview, monthOverview, blocks, hourlyRows, latestPerformance] =
+    await Promise.all([
+      api.getOverview({ sinceMs: today, costMode }),
+      month ? api.getOverview({ sinceMs: startOfMonth(now), costMode }) : null,
+      api.getBlocks({ sinceMs: blockLookbackSinceMs(now.getTime()), costMode }),
+      hourly ? api.getHourly({ sinceMs: today, costMode }) : null,
+      api.getLatestPerformance(),
+    ]);
   let hourlyCost: number[] | null = null;
   if (hourlyRows) {
     hourlyCost = Array<number>(24).fill(0);
@@ -65,6 +69,7 @@ async function fetchTodayStats(
     monthCost: monthOverview ? monthOverview.totals.cost : null,
     hourly: hourlyCost,
     activeBlock: pickActiveBlock(blocks),
+    latestPerformance,
   };
 }
 

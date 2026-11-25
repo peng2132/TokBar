@@ -19,7 +19,7 @@ jobs:
           - platform: macos-latest
             args: --target x86_64-apple-darwin
           - platform: windows-latest
-            args: ''
+            args: --config src-tauri/tauri.windows-signing.json
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -44,7 +44,57 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Configure Windows Authenticode signing
+        if: runner.os == 'Windows'
+        id: windows_signing
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_ENDPOINT: ${{ vars.WINDOWS_SIGNING_ENDPOINT }}
+          WINDOWS_SIGNING_ACCOUNT: ${{ vars.WINDOWS_SIGNING_ACCOUNT }}
+          WINDOWS_SIGNING_PROFILE: ${{ vars.WINDOWS_SIGNING_PROFILE }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          if (!$env:WINDOWS_SIGNING_ENDPOINT -or !$env:WINDOWS_SIGNING_ACCOUNT -or !$env:WINDOWS_SIGNING_PROFILE -or
+              !$env:AZURE_CLIENT_ID -or !$env:AZURE_TENANT_ID -or !$env:AZURE_CLIENT_SECRET) {
+            "configured=false" >> $env:GITHUB_OUTPUT
+            Write-Output '::notice::Windows signing is not configured. The installers will be uploaded as unsigned Actions artifacts for testing.'
+            exit 0
+          }
+          $sdkBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+          $signTool = Get-ChildItem "$sdkBin\*\x64\signtool.exe" -File |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          if (!$signTool) { throw 'The Windows SDK SignTool was not found.' }
+
+          $signingDir = Join-Path $env:RUNNER_TEMP 'tokbar-signing'
+          nuget install Microsoft.ArtifactSigning.Client -Version 1.0.151 -Source 'https://api.nuget.org/v3/index.json' -ExcludeVersion -NonInteractive -OutputDirectory $signingDir
+          if ($LASTEXITCODE -ne 0) { throw 'Installing the Microsoft signing client failed.' }
+          $dlib = Join-Path $signingDir 'Microsoft.ArtifactSigning.Client\bin\x64\Azure.CodeSigning.Dlib.dll'
+          if (!(Test-Path -LiteralPath $dlib)) { throw 'The x64 signing client was not found.' }
+          $metadata = Join-Path $signingDir 'metadata.json'
+          @{
+            Endpoint = $env:WINDOWS_SIGNING_ENDPOINT
+            CodeSigningAccountName = $env:WINDOWS_SIGNING_ACCOUNT
+            CertificateProfileName = $env:WINDOWS_SIGNING_PROFILE
+          } | ConvertTo-Json | Set-Content -LiteralPath $metadata -Encoding utf8
+
+          @{
+            bundle = @{
+              windows = @{
+                signCommand = @{
+                  cmd = $signTool.FullName
+                  args = @('sign', '/fd', 'SHA256', '/tr', 'http://timestamp.acs.microsoft.com', '/td', 'SHA256', '/dlib', $dlib, '/dmdf', $metadata, '%1')
+                }
+              }
+            }
+          } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath 'src-tauri/tauri.windows-signing.json' -Encoding utf8
+          "configured=true" >> $env:GITHUB_OUTPUT
+          "sign_tool=$($signTool.FullName)" >> $env:GITHUB_OUTPUT
+
       - uses: tauri-apps/tauri-action@v0
+        if: runner.os != 'Windows' || steps.windows_signing.outputs.configured == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # macOS 代码签名(Developer ID Application 证书,base64 编码的 .p12)
@@ -55,6 +105,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Artifact Signing uses the Windows release job's service principal.
+          AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'TokBar __VERSION__'
@@ -62,10 +116,39 @@ jobs:
             下载说明:
             - macOS (Apple Silicon): `*_aarch64.dmg`
             - macOS (Intel): `*_x64.dmg`
-            - Windows: `*_x64-setup.exe` 或 `*.msi`
+            - Windows: `*_x64-setup.exe` 或 `*.msi`（签名校验通过后提供）
 
             macOS 安装包已签名并经过 Apple 公证,可直接打开。
-            Windows 出现 SmartScreen 提示时点击"更多信息 → 仍要运行"。
+            Windows Release 安装包使用 Authenticode 签名，可在文件属性的「数字签名」中核对发行者。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Verify Windows app and installer signatures
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          SIGN_TOOL: ${{ steps.windows_signing.outputs.sign_tool }}
+        run: |
+          $app = Get-Item 'src-tauri/target/release/TokBar.exe'
+          $nsis = Get-ChildItem 'src-tauri/target/release/bundle/nsis' -Filter '*-setup.exe' -File
+          $msi = Get-ChildItem 'src-tauri/target/release/bundle/msi' -Filter '*.msi' -File
+          if (!$nsis -or !$msi) { throw 'Both the NSIS and MSI installers must be present.' }
+          foreach ($file in (@($app) + @($nsis) + @($msi))) {
+            & $env:SIGN_TOOL verify /pa /all /tw $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signature verification failed for $($file.Name)." }
+          }
+
+      - name: Build Windows test installers
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.configured == 'false'
+        run: pnpm tauri build --ci --bundles nsis,msi --no-sign
+
+      - name: Upload unsigned Windows test installers
+        if: runner.os == 'Windows' && steps.windows_signing.outputs.configured == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TokBar-${{ github.ref_name }}-windows-x64-unsigned
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error

@@ -7,8 +7,11 @@ import { Button } from "@/components/ui/button";
 export function LoadError({ onRetry }: { onRetry: () => void }) {
   const { t } = useI18n();
   return (
-    <div className="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
-      <AlertTriangle className="h-6 w-6" />
+    <div
+      role="alert"
+      className="flex flex-col items-center justify-center gap-3 rounded-xl border border-border bg-card py-12 text-muted-foreground"
+    >
+      <AlertTriangle className="size-5 text-danger" aria-hidden />
       <span className="text-sm">{t("common.loadFailed")}</span>
       <Button variant="outline" size="sm" onClick={onRetry}>
         {t("common.retry")}

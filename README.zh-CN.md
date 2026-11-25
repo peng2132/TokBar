@@ -42,6 +42,8 @@ TokBar 是一个跨平台桌面应用（macOS / Windows），用于分析你本�
 - **多 Agent 支持**：Claude Code、Codex CLI、Kimi CLI 开箱即用，适配器架构可继续扩展
 - **精确计费**：长上下文计价（超过 200K/272K/512K 时整次请求按长上下文价，与厂商计费方式一致）、5 分钟/1 小时缓存写入计价、缓存读取折扣、fast/priority 档价格、按日期生效的官方调价、DeepSeek 错峰价；价格变化后已存储的费用会自动重算
 - **菜单栏实时显示**：今日成本或 Token 数直接显示在时钟旁边
+- **生成性能**：菜单栏快捷面板显示最近一次输出速度（tok/s）。模型页显示输出速度和首 Token 延迟的中位数，以及各自的样本数。Codex 使用可见正文和回合首 Token 的计时，Magpie 使用网关日志并按服务商统计。
+- **提示词缓存命中率**：缓存读取占已记录输入 Token 的比例，含未缓存输入、缓存写入和缓存读取
 - **5 小时计费块**：按 Agent 分别把用量分组到整点对齐的 5 小时窗口（对应 Claude、Codex 各自的用量窗口），附实时燃烧率
 - **趋势与分布**：按日/周/月、按 Agent、按模型、按 Token 类型的图表
 - **本地与隐私**：所有数据本地解析、本地存储（SQLite），不离开你的电脑
@@ -71,6 +73,8 @@ TokBar 是一个跨平台桌面应用（macOS / Windows），用于分析你本�
 
 本机没有数据的来源会自动检测并保持为空，不影响使用。新增一个 Agent 只需在 `src-tauri/src/adapters/` 加一个文件。
 
+TokBar 从 `~/.config/magpie/usage.jsonl`（或 `$XDG_CONFIG_HOME/magpie/usage.jsonl`）读取本地计时和请求档位。Codex 记录通过响应 ID 匹配后，优先按上游返回的档位计价，回传缺失时使用 Magpie 发送的档位。未匹配的 Codex 记录显示为估算。回复完成且日志提供足够的输出量和计时时会显示生成速度。
+
 ## 安装
 
 从 [**Releases**](https://github.com/peng2132/TokBar/releases) 下载最新安装包：
@@ -78,7 +82,7 @@ TokBar 是一个跨平台桌面应用（macOS / Windows），用于分析你本�
 - **macOS**：`*_aarch64.dmg`（Apple Silicon）或 `*_x64.dmg`（Intel）
 - **Windows**：`*_x64-setup.exe` 或 `*.msi`
 
-> 当前安装包未签名。macOS 首次打开如提示“已损坏”，执行一次 `xattr -cr /Applications/TokBar.app` 即可；Windows 出现 SmartScreen 提示时，点“更多信息”，再点“仍要运行”。
+> macOS 发布流程使用 Developer ID 签名和 Apple 公证。新版 Windows 正式安装包通过 Authenticode 校验后发布。Windows 签名未配置时，对应的 Actions 运行提供未签名的测试安装包。
 
 ## 准确性
 

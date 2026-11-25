@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "TokBar",
   "mainBinaryName": "TokBar",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "identifier": "com.tokbar.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -16,8 +16,9 @@
         "title": "TokBar — AI Usage Dashboard",
         "width": 1280,
         "height": 820,
-        "minWidth": 980,
-        "minHeight": 640,
+        "minWidth": 500,
+        "minHeight": 480,
+        "visible": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
       }

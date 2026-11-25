@@ -26,7 +26,89 @@ const CACHE_FILE: &str = "litellm-pricing.json";
 
 /// Bump whenever the builtin tables below or the cost semantics change:
 /// it feeds the pricing fingerprint, so stored costs get re-priced.
-const RULES_VERSION: u32 = 2;
+const RULES_VERSION: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServiceTier {
+    Standard,
+    Priority,
+    Ultrafast,
+    Flex,
+}
+
+impl ServiceTier {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "default" | "standard" => Some(Self::Standard),
+            "fast" | "priority" => Some(Self::Priority),
+            "ultrafast" => Some(Self::Ultrafast),
+            "flex" => Some(Self::Flex),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Priority => "priority",
+            Self::Ultrafast => "ultrafast",
+            Self::Flex => "flex",
+        }
+    }
+
+    fn split_model(model: &str) -> (&str, Self) {
+        for (suffix, tier) in [
+            ("-fast", Self::Priority),
+            ("-ultrafast", Self::Ultrafast),
+            ("-flex", Self::Flex),
+        ] {
+            if let Some(base) = model.strip_suffix(suffix) {
+                return (base, tier);
+            }
+        }
+        (model, Self::Standard)
+    }
+
+    pub(crate) fn label(self, model: &str) -> String {
+        let (base, _) = Self::split_model(model);
+        match self {
+            Self::Standard => base.to_owned(),
+            Self::Priority => format!("{base}-fast"),
+            Self::Ultrafast => format!("{base}-ultrafast"),
+            Self::Flex => format!("{base}-flex"),
+        }
+    }
+
+    fn price(self, standard: ModelPricing, model: &str, ts_ms: i64) -> Option<ModelPricing> {
+        Some(match self {
+            Self::Standard => standard,
+            Self::Priority => standard.fast(fast_multiplier_for(model)),
+            Self::Ultrafast => {
+                // March 1, 2027, 00:00 Pacific Standard Time.
+                const GPT_62_PROMO_END_MS: i64 = 1_803_888_000_000;
+                let canon = canonical(model);
+                let base = strip_date_suffix(&canon);
+                let mult = match base {
+                    "gpt-6-2-astra" | "gpt-6-2-sol" if ts_ms < GPT_62_PROMO_END_MS => 3.0,
+                    "gpt-6-2-astra" | "gpt-6-2-sol" | "gpt-6-astra" | "gpt-6-1-sol" => 6.0,
+                    _ => return None,
+                };
+                standard.scaled(mult)
+            }
+            Self::Flex => {
+                if standard.flex.is_empty() {
+                    return None;
+                }
+                let fallback = standard.scaled(0.5);
+                ModelPricing {
+                    base: standard.flex.or(fallback.base),
+                    above: standard.flex_above.or(fallback.above),
+                    ..fallback
+                }
+            }
+        })
+    }
+}
 
 /// Per-token rates for one pricing tier. `None` = not published; the
 /// effective rate is then derived (see [`ModelPricing::effective`]).
@@ -96,6 +178,8 @@ pub struct ModelPricing {
     /// `*_priority`), standard and long-context.
     pub priority: Rates,
     pub priority_above: Rates,
+    pub flex: Rates,
+    pub flex_above: Rates,
 }
 
 impl ModelPricing {
@@ -139,6 +223,8 @@ impl ModelPricing {
             above: self.above.scaled(mult),
             priority: self.priority.scaled(mult),
             priority_above: self.priority_above.scaled(mult),
+            flex: self.flex.scaled(mult),
+            flex_above: self.flex_above.scaled(mult),
             ..self
         }
     }
@@ -157,8 +243,7 @@ impl ModelPricing {
             base: self.priority.or(self.base.scaled(m)),
             above: self.priority_above.or(self.above.scaled(m)),
             tier_threshold: self.tier_threshold,
-            priority: Rates::default(),
-            priority_above: Rates::default(),
+            ..Self::default()
         }
     }
 
@@ -168,7 +253,7 @@ impl ModelPricing {
 
     fn hash_into(&self, h: &mut impl Hasher) {
         self.tier_threshold.hash(h);
-        for r in [&self.base, &self.above, &self.priority, &self.priority_above] {
+        for r in [self.base, self.above, self.priority, self.priority_above, self.flex, self.flex_above] {
             for v in [r.input, r.output, r.cache_write_5m, r.cache_write_1h, r.cache_read] {
                 v.map(f64::to_bits).hash(h);
             }
@@ -244,8 +329,18 @@ const fn per_m(
             cache_write_1h: None,
             cache_read: None,
         },
+        flex: EMPTY_RATES,
+        flex_above: EMPTY_RATES,
     }
 }
+
+const EMPTY_RATES: Rates = Rates {
+    input: None,
+    output: None,
+    cache_write_5m: None,
+    cache_write_1h: None,
+    cache_read: None,
+};
 
 /// Adds a long-context tier (whole request above `threshold` tokens) to a
 /// [`per_m`] pricing, in $/1M.
@@ -287,6 +382,8 @@ const BUILTIN_PRICING: &[(&str, ModelPricing)] = &[
     // input bill the whole request at 2x input / 1.5x output; Fast is 2x
     // (FAST_DEFAULT). GPT-5.6 rates are the current ones; earlier list
     // prices live in PRICE_ERAS.
+    ("gpt-6.2-astra", tiered(per_m(8.0, 40.0, Some(10.0), Some(0.4)), 272_000, 16.0, 60.0, Some(20.0), Some(0.8))),
+    ("gpt-6.2-sol", tiered(per_m(2.0, 10.0, Some(2.5), Some(0.1)), 272_000, 4.0, 15.0, Some(5.0), Some(0.2))),
     ("gpt-6-astra", tiered(per_m(10.0, 50.0, Some(12.5), Some(1.0)), 272_000, 20.0, 75.0, Some(25.0), Some(2.0))),
     ("gpt-6-sol", tiered(per_m(2.0, 10.0, Some(2.5), Some(0.2)), 272_000, 4.0, 15.0, Some(5.0), Some(0.4))),
     ("gpt-6.1-sol", tiered(per_m(2.0, 10.0, Some(2.5), Some(0.1)), 272_000, 4.0, 15.0, Some(5.0), Some(0.2))),
@@ -534,27 +631,24 @@ impl PricingMap {
         Err(errors.join("; "))
     }
 
-    /// Whether any price is known for `model` (fast suffix ignored).
+    /// Whether a list price is known for the selected model and tier.
     pub fn is_priced(&self, model: &str) -> bool {
         self.resolve(model).is_some()
     }
 
-    /// Current pricing for a model (no date-dependent adjustments). A
-    /// "-fast" suffix (set by the adapters for fast/priority service-tier
-    /// usage) resolves to the base model's fast-tier rates.
+    /// Current list pricing, before any time-of-day adjustment.
     pub fn resolve(&self, model: &str) -> Option<ModelPricing> {
-        let (base, fast) = split_fast(model);
-        let p = self.find(base)?;
-        Some(if fast { p.fast(fast_multiplier_for(base)) } else { p })
+        let (base, tier) = ServiceTier::split_model(model);
+        tier.price(self.find(base)?, base, chrono::Utc::now().timestamp_millis())
     }
 
     /// Pricing in effect for usage of `model` at `ts_ms`: dated list-price
     /// eras and time-of-day discounts applied on top of [`resolve`].
     pub fn resolve_at(&self, model: &str, ts_ms: i64) -> Option<ModelPricing> {
-        let (base, fast) = split_fast(model);
+        let (base, tier) = ServiceTier::split_model(model);
         let canon = canonical(base);
         let p = era_pricing(&canon, ts_ms).or_else(|| self.find(base))?;
-        let p = if fast { p.fast(fast_multiplier_for(base)) } else { p };
+        let p = tier.price(p, base, ts_ms)?;
         let tm = time_multiplier(&canon, ts_ms);
         Some(if tm == 1.0 { p } else { p.scaled(tm) })
     }
@@ -610,13 +704,6 @@ impl PricingMap {
             .filter(|e| contains_at_boundary(&e.canon, &cm))
             .min_by_key(|e| (e.canon.len(), e.rank))
             .map(|e| e.pricing)
-    }
-}
-
-fn split_fast(model: &str) -> (&str, bool) {
-    match model.strip_suffix("-fast") {
-        Some(base) => (base, true),
-        None => (model, false),
     }
 }
 
@@ -701,12 +788,12 @@ fn pricing_from_litellm(obj: &Map<String, Value>) -> Option<ModelPricing> {
             rest.strip_suffix("k_tokens")?.parse::<u64>().ok()
         })
         .min();
-    let (tier_threshold, above, priority_above) = match threshold_k {
+    let (tier_threshold, above, priority_above, flex_above) = match threshold_k {
         Some(n) => {
             let s = format!("_above_{n}k_tokens");
-            (n * 1000, rates(&s), rates(&format!("{s}_priority")))
+            (n * 1000, rates(&s), rates(&format!("{s}_priority")), rates(&format!("{s}_flex")))
         }
-        None => (0, Rates::default(), Rates::default()),
+        None => (0, Rates::default(), Rates::default(), Rates::default()),
     };
     Some(ModelPricing {
         base,
@@ -717,6 +804,8 @@ fn pricing_from_litellm(obj: &Map<String, Value>) -> Option<ModelPricing> {
             ..rates("_priority")
         },
         priority_above,
+        flex: rates("_flex"),
+        flex_above,
     })
 }
 
@@ -771,6 +860,19 @@ mod tests {
 
     fn per_1m(v: f64) -> f64 {
         (v * 1e6 * 1e6).round() / 1e6
+    }
+
+    #[test]
+    fn ultrafast_rates_follow_request_date_and_prompt_tier() {
+        let pricing = PricingMap::load(None);
+        let promo = pricing.resolve_at("gpt-6.2-sol-ultrafast", ts("2027-03-01T07:59:59Z")).unwrap();
+        let fast_end = pricing.resolve_at("gpt-6.2-sol-ultrafast", ts("2027-03-01T08:00:00Z")).unwrap();
+        assert_eq!(per_1m(promo.effective(272_000).input), 6.0);
+        assert_eq!(per_1m(promo.effective(272_001).input), 12.0);
+        assert_eq!(per_1m(promo.effective(272_001).cache_read), 0.6);
+        assert_eq!(per_1m(fast_end.effective(272_001).output), 90.0);
+        let astra = pricing.resolve_at("gpt-6-astra-ultrafast", ts("2026-11-25T00:00:00Z")).unwrap();
+        assert_eq!(per_1m(astra.effective(272_000).output), 300.0);
     }
 
     /// Official Anthropic prices per 1M (input, output, 5m write, read).

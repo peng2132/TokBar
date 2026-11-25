@@ -136,7 +136,7 @@ pub fn parse_append(path: &Path, offset: u64, state: Option<&str>) -> AppendPars
     let path_project = project_name_from_path(path);
 
     let mut records = Vec::new();
-    let end = jsonl::scan_lines(path, offset, &["\"usage\""], |line, complete| {
+    let end = jsonl::scan_lines(path, offset, &["\"usage\""], |line, complete, _| {
         // A trailing line still being written is parsed for display but
         // its state is not kept: it is re-read once complete.
         let mut scratch;
@@ -152,6 +152,8 @@ pub fn parse_append(path: &Path, offset: u64, state: Option<&str>) -> AppendPars
     });
     AppendParse {
         records,
+        performance: Vec::new(),
+        request_pricing: Vec::new(),
         offset: end.unwrap_or(offset),
         state: serde_json::to_string(&st).ok(),
     }

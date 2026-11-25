@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useState,
   type ReactNode,
 } from "react";
@@ -17,46 +18,46 @@ export const ACCENTS: Record<
   {
     label: string;
     swatch: string;
-    primary: string;
-    primaryFg: string;
+    light: string;
+    dark: string;
     /// Chart series palette led by the accent — charts re-color with the theme.
     charts: [string, string, string, string, string];
   }
 > = {
   amber: {
     label: "Amber",
-    swatch: "#d97757",
-    primary: "oklch(0.72 0.15 50)",
-    primaryFg: "oklch(0.14 0.004 285)",
-    charts: ["#d97757", "#38bdf8", "#34d399", "#fbbf24", "#c084fc"],
+    swatch: "#be672a",
+    light: "#9c4b1b",
+    dark: "#efae7a",
+    charts: ["#be672a", "#5a83c1", "#45907d", "#9676c4", "#b59b50"],
   },
   blue: {
     label: "Blue",
-    swatch: "#3b82f6",
-    primary: "oklch(0.62 0.19 260)",
-    primaryFg: "oklch(0.98 0 0)",
-    charts: ["#3b82f6", "#22d3ee", "#8b5cf6", "#34d399", "#f59e0b"],
+    swatch: "#4c6ddd",
+    light: "#3256cf",
+    dark: "#9aadff",
+    charts: ["#4c6ddd", "#4b9da0", "#b5834e", "#9878c4", "#ca7594"],
   },
   emerald: {
     label: "Emerald",
-    swatch: "#10b981",
-    primary: "oklch(0.7 0.15 162)",
-    primaryFg: "oklch(0.14 0.004 285)",
-    charts: ["#10b981", "#38bdf8", "#a3e635", "#fbbf24", "#2dd4bf"],
+    swatch: "#268d6c",
+    light: "#0e7355",
+    dark: "#76d0ae",
+    charts: ["#268d6c", "#5f87d0", "#b3834b", "#9878c4", "#aa8191"],
   },
   violet: {
     label: "Violet",
-    swatch: "#8b5cf6",
-    primary: "oklch(0.61 0.22 293)",
-    primaryFg: "oklch(0.98 0 0)",
-    charts: ["#8b5cf6", "#ec4899", "#38bdf8", "#c084fc", "#f59e0b"],
+    swatch: "#8863c5",
+    light: "#7046b5",
+    dark: "#c9aff8",
+    charts: ["#8863c5", "#bd728d", "#4988b5", "#51947e", "#b38755"],
   },
   rose: {
     label: "Rose",
-    swatch: "#f43f5e",
-    primary: "oklch(0.65 0.22 16)",
-    primaryFg: "oklch(0.98 0 0)",
-    charts: ["#f43f5e", "#fb923c", "#a78bfa", "#f472b6", "#38bdf8"],
+    swatch: "#c95e7f",
+    light: "#ab3d60",
+    dark: "#f4a0b9",
+    charts: ["#c95e7f", "#b5824f", "#8875c1", "#4f93a0", "#6086c2"],
   },
 };
 
@@ -65,16 +66,15 @@ const ACCENT_KEY = "tokbar-accent";
 
 function applyTheme(mode: ThemeMode, accent: AccentKey) {
   const root = document.documentElement;
-  root.classList.toggle("light", mode === "light");
+  root.classList.toggle("dark", mode === "dark");
   // Keep the native window chrome (macOS traffic-light strip, Windows
   // title bar) in the same color world as the page.
   if (IN_TAURI) {
     getCurrentWindow().setTheme(mode).catch(() => {});
   }
   const a = ACCENTS[accent];
-  root.style.setProperty("--primary", a.primary);
-  root.style.setProperty("--primary-foreground", a.primaryFg);
-  root.style.setProperty("--ring", a.primary);
+  root.style.setProperty("--primary", a[mode]);
+  root.style.setProperty("--ring", a[mode]);
   a.charts.forEach((color, i) => {
     root.style.setProperty(`--chart-${i + 1}`, color);
   });
@@ -82,12 +82,13 @@ function applyTheme(mode: ThemeMode, accent: AccentKey) {
 
 function detectMode(): ThemeMode {
   const saved = localStorage.getItem(MODE_KEY);
-  return saved === "light" ? "light" : "dark";
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function detectAccent(): AccentKey {
   const saved = localStorage.getItem(ACCENT_KEY);
-  return saved && saved in ACCENTS ? (saved as AccentKey) : "amber";
+  return saved && saved in ACCENTS ? (saved as AccentKey) : "blue";
 }
 
 interface ThemeValue {
@@ -98,8 +99,8 @@ interface ThemeValue {
 }
 
 const ThemeContext = createContext<ThemeValue>({
-  mode: "dark",
-  accent: "amber",
+  mode: "light",
+  accent: "blue",
   setMode: () => {},
   setAccent: () => {},
 });
@@ -108,7 +109,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<ThemeMode>(detectMode);
   const [accent, setAccentState] = useState<AccentKey>(detectAccent);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     applyTheme(mode, accent);
   }, [mode, accent]);
 

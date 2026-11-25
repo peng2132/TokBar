@@ -31,6 +31,7 @@ import { useDayKey } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import { useI18n, type I18nKey } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Logo } from "@/components/Logo";
 
@@ -55,7 +56,13 @@ const SettingsPage = lazy(() =>
   import("@/pages/Settings").then((m) => ({ default: m.SettingsPage })),
 );
 
-type Page = "overview" | "trends" | "sessions" | "models" | "blocks" | "settings";
+export type Page =
+  | "overview"
+  | "trends"
+  | "sessions"
+  | "models"
+  | "blocks"
+  | "settings";
 
 const NAV: { id: Page; labelKey: I18nKey; icon: typeof LayoutDashboard }[] = [
   { id: "overview", labelKey: "nav.overview", icon: LayoutDashboard },
@@ -66,10 +73,9 @@ const NAV: { id: Page; labelKey: I18nKey; icon: typeof LayoutDashboard }[] = [
   { id: "settings", labelKey: "nav.settings", icon: Settings },
 ];
 
-// With the macOS overlay title bar (transparent, traffic lights floating
-// over the content) the sidebar header leaves room for the buttons and the
-// top strip doubles as the window drag handle.
-const IS_MAC = navigator.userAgent.includes("Mac");
+export function isPage(value: string): value is Page {
+  return NAV.some(({ id }) => id === value);
+}
 
 const RANGES: { id: RangeKey; labelKey: I18nKey }[] = [
   { id: "today", labelKey: "range.today" },
@@ -93,9 +99,14 @@ function loadRange(): RangeKey {
   return RANGES.some((r) => r.id === v) ? (v as RangeKey) : "30d";
 }
 
-function App() {
+function App({
+  page,
+  setPage,
+}: {
+  page: Page;
+  setPage: (page: Page) => void;
+}) {
   const { t } = useI18n();
-  const [page, setPage] = useState<Page>("overview");
   const [range, setRange] = useState<RangeKey>(loadRange);
   // Backend-owned (it also drives the menu-bar title); the main window
   // migrates the old localStorage copy once. Null until first read.
@@ -115,6 +126,7 @@ function App() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const feedbackTimer = useRef<number | undefined>(undefined);
   const progressTimer = useRef<number | undefined>(undefined);
+  const contentRef = useRef<HTMLElement>(null);
 
   const clearProgress = useCallback(() => {
     window.clearTimeout(progressTimer.current);
@@ -165,6 +177,9 @@ function App() {
   );
 
   useEffect(() => localStorage.setItem(RANGE_KEY, range), [range]);
+  useEffect(() => {
+    contentRef.current?.scrollTo(0, 0);
+  }, [page]);
 
   // Initial scan on launch. Live updates arrive via the backend file
   // watcher ("usage-updated"); a 5-minute rescan remains as a fallback,
@@ -206,18 +221,11 @@ function App() {
         );
       },
     );
-    // Deep links from the quick panel's stat cards.
-    const unlistenNav = onEvent<string>("navigate-page", (e) => {
-      if (NAV.some((n) => n.id === e.payload)) {
-        setPage(e.payload as Page);
-      }
-    });
     return () => {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibility);
       unlistenUpdate.then((fn) => fn());
       unlistenProgress.then((fn) => fn());
-      unlistenNav.then((fn) => fn());
       window.clearTimeout(feedbackTimer.current);
       window.clearTimeout(progressTimer.current);
     };
@@ -234,162 +242,156 @@ function App() {
   );
 
   const showRange = page !== "blocks" && page !== "settings";
+  const title = t(NAV.find((item) => item.id === page)!.labelKey);
+  const refreshLabel = scanProgress
+    ? t("app.scanProgress", scanProgress)
+    : scanning
+      ? t("app.scanning")
+      : refreshError
+        ? t("app.refreshFailed")
+        : justRefreshed
+          ? justRefreshed.entriesInserted > 0
+            ? t("app.refreshed", { n: justRefreshed.entriesInserted })
+            : t("app.upToDate")
+          : t("app.refresh");
 
   return (
-    <div className="flex h-full">
-      {/* Sidebar: on macOS it stays transparent so the window vibrancy
-          (desktop blurred through) is strongest here, like Finder /
-          System Settings; elsewhere it keeps its solid surface step. */}
-      <aside
-        className={cn(
-          "flex w-52 shrink-0 flex-col border-r border-border",
-          IS_MAC ? "bg-transparent" : "bg-card/50",
-        )}
-      >
+    <div className="app-shell">
+      <aside className="workspace-sidebar flex min-w-0 flex-col border-border bg-sidebar max-[981px]:border-b min-[981px]:border-r">
         <div
           data-tauri-drag-region
-          className={cn(
-            "flex items-center gap-2.5 px-5 pb-5",
-            IS_MAC ? "pt-11" : "pt-5",
-          )}
+          className="flex h-19 shrink-0 items-center gap-2.5 px-5 max-[981px]:h-11"
         >
-          <Logo size={32} />
-          <div>
-            <div className="text-sm font-semibold leading-none">TokBar</div>
-            <div className="mt-0.5 text-[10px] text-muted-foreground">
-              {t("app.subtitle")}
-            </div>
-          </div>
+          <Logo size={27} />
+          <span className="text-[16px] font-semibold tracking-tight">
+            TokBar
+          </span>
         </div>
-        <nav className="flex-1 space-y-1 px-3">
+        <nav
+          aria-label={t("app.navigation")}
+          className="flex min-h-0 flex-1 gap-1 px-2.5 pb-2 max-[981px]:grid max-[981px]:grid-cols-6 min-[981px]:flex-col min-[981px]:px-3 min-[981px]:pb-4"
+        >
           {NAV.map((item) => (
             <button
+              type="button"
               key={item.id}
               onClick={() => setPage(item.id)}
+              aria-current={page === item.id ? "page" : undefined}
               className={cn(
-                "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-[color,background-color,transform] duration-150 active:scale-[0.97]",
-                page === item.id
-                  ? "bg-primary/10 font-medium text-primary"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                "flex h-9 min-w-0 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-transparent px-2.5 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground aria-[current=page]:border-border aria-[current=page]:bg-card aria-[current=page]:text-foreground aria-[current=page]:shadow-xs",
+                "max-[981px]:justify-center max-[680px]:h-11 max-[680px]:flex-col max-[680px]:gap-0.5 max-[680px]:px-1 max-[680px]:text-[11px]",
+                item.id === "settings" && "min-[981px]:mt-auto",
               )}
             >
-              <item.icon className="h-4 w-4" />
-              {t(item.labelKey)}
+              <item.icon
+                aria-hidden
+                className={cn(
+                  "size-4 shrink-0",
+                  page === item.id && "text-primary",
+                )}
+              />
+              <span className="max-w-full truncate">{t(item.labelKey)}</span>
             </button>
           ))}
         </nav>
       </aside>
 
-      {/* Main: carries the content wash (translucent on macOS, solid
-          elsewhere) so data stays legible over the vibrancy. */}
-      <div className="flex min-w-0 flex-1 flex-col bg-background">
+      <div className="flex min-h-0 min-w-0 flex-col bg-background">
         <header
           data-tauri-drag-region
-          className="flex items-center justify-between border-b border-border px-6 py-3"
+          className="workspace-header shrink-0 border-b border-border"
         >
-          <h1 className="text-base font-semibold">
-            {t(NAV.find((n) => n.id === page)!.labelKey)}
-          </h1>
-          <div className="flex items-center gap-2">
-            {showRange && (
-              <div className="flex rounded-lg border border-border p-0.5">
-                {RANGES.map((r) => (
-                  <button
-                    key={r.id}
-                    onClick={() => setRange(r.id)}
-                    aria-pressed={range === r.id}
-                    className={cn(
-                      "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                      range === r.id
-                        ? "bg-primary/10 text-primary"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {t(r.labelKey)}
-                  </button>
-                ))}
-              </div>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => refresh(true)}
-              disabled={scanning}
-              title={refreshError && !scanning ? refreshError : undefined}
-              className="min-w-24"
-            >
-              {refreshError && !scanning ? (
-                <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
-              ) : justRefreshed && !scanning ? (
-                <Check className="h-3.5 w-3.5 text-primary" />
-              ) : (
-                <RefreshCw
-                  className={cn("h-3.5 w-3.5", scanning && "animate-spin")}
+          <div
+            data-tauri-drag-region
+            className="mx-auto flex min-h-19 max-w-[1440px] flex-wrap items-center justify-between gap-2.5 px-4 py-3 sm:px-6 lg:px-8"
+          >
+            <h1 className="text-[25px] leading-tight font-semibold tracking-tight">
+              {title}
+            </h1>
+            <div className="flex max-w-full flex-wrap items-center gap-2">
+              {showRange && (
+                <SegmentedControl
+                  label={t("app.dateRange")}
+                  options={RANGES.map((item) => ({
+                    id: item.id,
+                    label: t(item.labelKey),
+                  }))}
+                  value={range}
+                  onChange={setRange}
                 />
               )}
-              <span aria-live="polite">
-                {scanProgress
-                  ? t("app.scanProgress", {
-                      done: scanProgress.done,
-                      total: scanProgress.total,
-                    })
-                  : scanning
-                    ? t("app.scanning")
-                    : refreshError
-                      ? t("app.refreshFailed")
-                      : justRefreshed
-                        ? justRefreshed.entriesInserted > 0
-                          ? t("app.refreshed", {
-                              n: justRefreshed.entriesInserted,
-                            })
-                          : t("app.upToDate")
-                        : t("app.refresh")}
-              </span>
-            </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void refresh(true)}
+                disabled={scanning}
+                title={refreshError && !scanning ? refreshError : undefined}
+              >
+                {refreshError && !scanning ? (
+                  <AlertTriangle className="size-3.5 text-danger" />
+                ) : justRefreshed && !scanning ? (
+                  <Check className="size-3.5 text-success" />
+                ) : (
+                  <RefreshCw
+                    className={cn(
+                      "size-3.5",
+                      scanning && "motion-safe:animate-spin",
+                    )}
+                  />
+                )}
+                <span aria-live="polite">{refreshLabel}</span>
+              </Button>
+            </div>
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-6">
-          <Suspense fallback={<Skeleton className="h-80" />}>
-          {/* Every page prices with the backend cost mode: wait for it
+        <main
+          ref={contentRef}
+          aria-label={title}
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
+          <div className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8">
+            <Suspense fallback={<Skeleton className="h-80" />}>
+              {/* Every page prices with the backend cost mode: wait for it
               (one quick IPC read) rather than fetch twice. */}
-          {!params || !costMode ? (
-            <Skeleton className="h-80" />
-          ) : (
-          <>
-          {page === "overview" && (
-            <OverviewPage
-              params={params}
-              refreshKey={refreshKey}
-              hourly={range === "today"}
-            />
-          )}
-          {page === "trends" && (
-            <TrendsPage
-              params={params}
-              refreshKey={refreshKey}
-              hourly={range === "today"}
-            />
-          )}
-          {page === "sessions" && (
-            <SessionsPage params={params} refreshKey={refreshKey} />
-          )}
-          {page === "models" && (
-            <ModelsPage params={params} refreshKey={refreshKey} />
-          )}
-          {page === "blocks" && (
-            <BlocksPage costMode={costMode} refreshKey={refreshKey} />
-          )}
-          {page === "settings" && (
-            <SettingsPage
-              costMode={costMode}
-              onCostModeChange={setCostMode}
-              lastScan={lastScan}
-            />
-          )}
-          </>
-          )}
-          </Suspense>
+              {!params || !costMode ? (
+                <Skeleton className="h-80" />
+              ) : (
+                <>
+                  {page === "overview" && (
+                    <OverviewPage
+                      params={params}
+                      refreshKey={refreshKey}
+                      hourly={range === "today"}
+                    />
+                  )}
+                  {page === "trends" && (
+                    <TrendsPage
+                      params={params}
+                      refreshKey={refreshKey}
+                      hourly={range === "today"}
+                    />
+                  )}
+                  {page === "sessions" && (
+                    <SessionsPage params={params} refreshKey={refreshKey} />
+                  )}
+                  {page === "models" && (
+                    <ModelsPage params={params} refreshKey={refreshKey} />
+                  )}
+                  {page === "blocks" && (
+                    <BlocksPage costMode={costMode} refreshKey={refreshKey} />
+                  )}
+                  {page === "settings" && (
+                    <SettingsPage
+                      costMode={costMode}
+                      onCostModeChange={setCostMode}
+                      lastScan={lastScan}
+                    />
+                  )}
+                </>
+              )}
+            </Suspense>
+          </div>
         </main>
       </div>
     </div>

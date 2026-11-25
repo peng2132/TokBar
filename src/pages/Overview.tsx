@@ -1,12 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
-import {
-  Activity,
-  Bot,
-  Coins,
-  DollarSign,
-  FolderGit2,
-  MessageSquare,
-} from "lucide-react";
+import { useEffect, useState } from "react";
 import {
   api,
   type AgentBreakdown,
@@ -19,6 +11,7 @@ import {
 import {
   agentColor,
   agentLabel,
+  formatCacheHitRate,
   formatCost,
   formatNumber,
   formatTokens,
@@ -26,16 +19,24 @@ import {
 import { startOfMonth } from "@/lib/dates";
 import { useI18n } from "@/lib/i18n";
 import { useSubscriptions } from "@/lib/subscriptions";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LoadError } from "@/components/LoadError";
-import { StatCard } from "@/components/StatCard";
 import { RoiCard } from "@/components/RoiCard";
+import { CostTrendChart } from "@/components/charts";
+import { EmptyState } from "@/components/EmptyState";
 import {
-  CostTrendChart,
-  DistributionPie,
-  modelPie as buildModelPie,
-} from "@/components/charts";
+  UsageDistribution,
+  modelDistribution,
+} from "@/components/UsageDistribution";
+import { Frame, FrameHeader, FramePanel } from "@/components/ui/frame";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 interface OverviewLoad {
   /** Which query these rows answer (see `queryKey`). */
@@ -113,166 +114,201 @@ export function OverviewPage({
   }, [queryKey, refreshKey, attempt]);
 
   const current = loaded?.key === queryKey ? loaded : null;
+  if (error)
+    return <LoadError onRetry={() => setAttempt((value) => value + 1)} />;
+  if (!current) return <Skeleton className="h-[360px]" />;
 
-  // Stable references so DistributionPie's internal memo isn't defeated
-  // by a fresh array on every unrelated re-render.
-  const modelPie = useMemo(
-    () => buildModelPie(current?.models ?? [], "cost", 6),
-    [current],
-  );
-  const agentPie = useMemo(
-    () =>
-      (current?.overview.byAgent ?? []).map((a) => ({
-        key: a.agent,
-        name: agentLabel(a.agent),
-        value: a.cost,
-        color: agentColor(a.agent),
-      })),
-    [current],
-  );
-
-  if (error) {
-    return <LoadError onRetry={() => setAttempt((a) => a + 1)} />;
-  }
-  if (!current) {
-    return (
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {Array.from({ length: 8 }).map((_, i) => (
-          <Skeleton key={i} className="h-28" />
-        ))}
-      </div>
-    );
-  }
-
-  const { overview, daily, projects } = current;
-  const tot = overview.totals;
+  const { overview, daily, models, projects } = current;
+  const totals = overview.totals;
+  const metrics = [
+    {
+      title: t("overview.totalTokens"),
+      value: formatTokens(totals.totalTokens),
+      detail: t("overview.inOut", {
+        in: formatTokens(totals.inputTokens),
+        out: formatTokens(totals.outputTokens),
+      }),
+    },
+    { title: t("overview.requests"), value: formatNumber(totals.requests) },
+    {
+      title: t("overview.sessions"),
+      value: formatNumber(totals.sessions),
+      detail: t("overview.agents", { n: overview.byAgent.length }),
+    },
+    {
+      title: t("overview.cacheHitRate"),
+      value: formatCacheHitRate(totals) ?? "—",
+      detail: t("overview.cacheRead", {
+        n: formatTokens(totals.cacheReadTokens),
+      }),
+    },
+  ];
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-5">
+      <Frame aria-labelledby="overview-cost-trend">
+        <FrameHeader>
+          <h2 id="overview-cost-trend" className="text-sm font-semibold">
+            {t("overview.costTrend")}
+          </h2>
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {t("overview.activeDays", { n: totals.activeDays })}
+          </span>
+        </FrameHeader>
+        <FramePanel className="grid min-[900px]:grid-cols-[minmax(0,1fr)_230px]">
+          <div className="min-w-0 px-4 pt-5 pb-3 sm:px-6">
+            <div className="text-xs font-medium text-muted-foreground">
+              {t(
+                params.costMode === "display"
+                  ? "overview.reportedCost"
+                  : params.costMode === "calculate"
+                    ? "overview.apiCostEstimate"
+                    : "overview.totalCost",
+              )}
+            </div>
+            <div className="mt-1 text-[clamp(2rem,4vw,2.75rem)] leading-none font-semibold tracking-[-0.045em] tabular-nums">
+              {formatCost(totals.cost)}
+            </div>
+            {params.costMode !== "display" &&
+              overview.byAgent.some((row) => row.agent === "codex") && (
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  {t("overview.codexPricing", {
+                    returned: formatNumber(overview.codexPricing.returned),
+                    sent: formatNumber(overview.codexPricing.sent),
+                    estimated: formatNumber(overview.codexPricing.estimated),
+                  })}
+                </p>
+              )}
+            <div className="mt-5">
+              {daily.length > 0 ? (
+                <CostTrendChart
+                  rows={daily}
+                  granularity={hourly ? "hour" : "day"}
+                  aggregate
+                  height={214}
+                />
+              ) : (
+                <EmptyState className="min-h-[214px]" />
+              )}
+            </div>
+          </div>
+          <aside
+            aria-label={t("overview.usageSummary")}
+            className="border-t border-border bg-background/75 px-4 py-4 min-[900px]:border-t-0 min-[900px]:border-l min-[900px]:px-5"
+          >
+            <h3 className="mb-2 text-xs font-semibold text-muted-foreground">
+              {t("overview.usageSummary")}
+            </h3>
+            <dl className="grid grid-cols-2 gap-x-4 divide-border min-[900px]:grid-cols-1 min-[900px]:divide-y">
+              {metrics.map(({ title, value, detail }) => (
+                <div key={title} className="min-w-0 py-2.5">
+                  <dt className="text-xs text-muted-foreground">{title}</dt>
+                  <dd className="mt-0.5 text-xl leading-tight font-semibold tracking-tight tabular-nums">
+                    {value}
+                  </dd>
+                  {detail && (
+                    <dd className="mt-0.5 text-[11px] text-muted-foreground">
+                      {detail}
+                    </dd>
+                  )}
+                </div>
+              ))}
+            </dl>
+          </aside>
+        </FramePanel>
+      </Frame>
+
+      <Frame aria-labelledby="overview-cost-distribution">
+        <FrameHeader>
+          <h2 id="overview-cost-distribution" className="text-sm font-semibold">
+            {t("overview.costDistribution")}
+          </h2>
+        </FrameHeader>
+        <FramePanel className="divide-y divide-border">
+          {totals.cost > 0 ? (
+            <>
+              <div className="space-y-2.5 px-4 py-3.5">
+                <h3 className="text-xs font-medium text-muted-foreground">
+                  {t("overview.costByAgent")}
+                </h3>
+                <UsageDistribution
+                  rows={overview.byAgent.map((row) => ({
+                    id: row.agent,
+                    label: agentLabel(row.agent),
+                    value: row.cost,
+                    color: agentColor(row.agent),
+                  }))}
+                  formatValue={formatCost}
+                />
+              </div>
+              <div className="space-y-2.5 px-4 py-3.5">
+                <h3 className="text-xs font-medium text-muted-foreground">
+                  {t("overview.costByModel")}
+                </h3>
+                <UsageDistribution
+                  rows={modelDistribution(models, "cost")}
+                  formatValue={formatCost}
+                />
+              </div>
+            </>
+          ) : (
+            <EmptyState />
+          )}
+        </FramePanel>
+      </Frame>
+
       <RoiCard
         monthByAgent={monthByAgent}
         failed={roiError}
-        onRetry={() => setRoiAttempt((a) => a + 1)}
+        onRetry={() => setRoiAttempt((value) => value + 1)}
       />
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard
-          title={t("overview.totalCost")}
-          value={formatCost(tot.cost)}
-          sub={t("overview.activeDays", { n: tot.activeDays })}
-          icon={DollarSign}
-        />
-        <StatCard
-          title={t("overview.totalTokens")}
-          value={formatTokens(tot.totalTokens)}
-          sub={t("overview.inOut", {
-            in: formatTokens(tot.inputTokens),
-            out: formatTokens(tot.outputTokens),
-          })}
-          icon={Coins}
-        />
-        <StatCard
-          title={t("overview.requests")}
-          value={formatNumber(tot.requests)}
-          sub={t("overview.cacheRead", {
-            n: formatTokens(tot.cacheReadTokens),
-          })}
-          icon={MessageSquare}
-        />
-        <StatCard
-          title={t("overview.sessions")}
-          value={formatNumber(tot.sessions)}
-          sub={t("overview.agents", { n: overview.byAgent.length })}
-          icon={Activity}
-        />
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("overview.costTrend")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {daily.length > 0 ? (
-            <CostTrendChart
-              rows={daily}
-              granularity={hourly ? "hour" : "day"}
-            />
+      <Frame aria-labelledby="overview-projects">
+        <FrameHeader>
+          <h2 id="overview-projects" className="text-sm font-semibold">
+            {t("overview.topProjects")}
+          </h2>
+        </FrameHeader>
+        <FramePanel>
+          {projects.length === 0 ? (
+            <EmptyState />
           ) : (
-            <EmptyHint />
+            <Table className="min-w-[360px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("th.project")}</TableHead>
+                  <TableHead className="text-right">{t("th.tokens")}</TableHead>
+                  <TableHead className="text-right">
+                    {t("overview.sessions")}
+                  </TableHead>
+                  <TableHead className="text-right">{t("th.cost")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {projects.map((project) => (
+                  <TableRow key={project.project}>
+                    <TableCell
+                      className="max-w-56 truncate font-medium"
+                      title={project.project}
+                    >
+                      {project.project}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatTokens(project.totalTokens)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatNumber(project.sessions)}
+                    </TableCell>
+                    <TableCell className="text-right font-medium tabular-nums">
+                      {formatCost(project.cost)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           )}
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle>{t("overview.costByModel")}</CardTitle>
-            <Bot className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {modelPie.length > 0 ? (
-              <DistributionPie data={modelPie} valueFormatter={formatCost} />
-            ) : (
-              <EmptyHint />
-            )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle>{t("overview.costByAgent")}</CardTitle>
-            <Bot className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            {agentPie.length > 0 ? (
-              <DistributionPie data={agentPie} valueFormatter={formatCost} />
-            ) : (
-              <EmptyHint />
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle>{t("overview.topProjects")}</CardTitle>
-          <FolderGit2 className="h-4 w-4 text-muted-foreground" />
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {projects.length === 0 && <EmptyHint />}
-          {projects.map((p) => {
-            const max = projects[0]?.cost || 1;
-            return (
-              <div key={p.project} className="space-y-1">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="truncate font-medium">{p.project}</span>
-                  <span className="ml-3 shrink-0 tabular-nums text-muted-foreground">
-                    {t("overview.projectStats", {
-                      cost: formatCost(p.cost),
-                      tokens: formatTokens(p.totalTokens),
-                      sessions: p.sessions,
-                    })}
-                  </span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary"
-                    style={{ width: `${Math.max(2, (p.cost / max) * 100)}%` }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function EmptyHint() {
-  const { t } = useI18n();
-  return (
-    <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-      {t("common.empty")}
+        </FramePanel>
+      </Frame>
     </div>
   );
 }

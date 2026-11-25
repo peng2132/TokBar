@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { Flame, Hourglass } from "lucide-react";
 import { api, type Block, type CostMode } from "@/lib/api";
 import {
   BLOCK_LOOKBACK_DAYS,
@@ -17,8 +16,18 @@ import {
   remainingLabel,
   shortModelName,
 } from "@/lib/format";
-import { cn } from "@/lib/utils";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
+import { EmptyState } from "@/components/EmptyState";
+import { Frame, FrameHeader, FramePanel } from "@/components/ui/frame";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LoadError } from "@/components/LoadError";
@@ -63,104 +72,151 @@ export function BlocksPage({
     return <Skeleton className="h-80" />;
   }
 
-  const usage = blocks.filter((b) => !b.isGap && b.agent === agent);
+  const usage = blocks.filter((block) => !block.isGap && block.agent === agent);
+  const active = usage.filter((block) => block.isActive);
+  const history = usage.filter((block) => !block.isActive);
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="max-w-2xl text-xs text-muted-foreground">
+        <p className="max-w-xl text-sm text-muted-foreground">
           {t("blocks.desc", { days: BLOCK_LOOKBACK_DAYS })}
         </p>
-        {/* Shown even for a single agent: it says whose blocks these are. */}
-        {agents.length > 0 && (
-          <div
-            role="group"
-            aria-label={t("th.agent")}
-            className="flex rounded-lg border border-border p-0.5"
-          >
-            {agents.map((a) => (
-              <button
-                key={a}
-                onClick={() => setPicked(a)}
-                aria-pressed={agent === a}
-                className={cn(
-                  "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                  agent === a
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {agentLabel(a)}
-              </button>
-            ))}
-          </div>
+        {agent && (
+          <SegmentedControl
+            label={t("th.agent")}
+            options={agents.map((id) => ({ id, label: agentLabel(id) }))}
+            value={agent}
+            onChange={setPicked}
+          />
         )}
       </div>
+
       {usage.length === 0 && (
         <Card>
-          <CardContent className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-            {t("blocks.empty", { days: BLOCK_LOOKBACK_DAYS })}
-          </CardContent>
+          <EmptyState
+            message={t("blocks.empty", { days: BLOCK_LOOKBACK_DAYS })}
+          />
         </Card>
       )}
-      {usage.map((b) => (
-        <Card
-          key={b.id}
-          className={b.isActive ? "border-primary/50" : undefined}
-        >
-          <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 p-4">
-            <div className="flex min-w-44 items-center gap-2">
-              {b.isActive ? (
-                <Flame className="h-4 w-4 text-primary" />
-              ) : (
-                <Hourglass className="h-4 w-4 text-muted-foreground" />
-              )}
+      {active.map((block) => (
+        <Frame key={block.id}>
+          <FrameHeader>
+            <h2 className="text-sm font-semibold">{t("quick.activeBlock")}</h2>
+            <Badge variant="success" className="gap-1.5">
+              <span className="size-1.5 rounded-full bg-current" aria-hidden />
+              {t("blocks.live")}
+            </Badge>
+          </FrameHeader>
+          <FramePanel className="grid min-[940px]:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+            <div className="flex flex-col gap-3 bg-background/75 p-5">
               <div>
-                <div className="text-sm font-medium">
-                  {formatDateTime(b.startMs)} – {formatTime(b.endMs)}
+                <div className="text-sm font-semibold">
+                  {formatDateTime(block.startMs)} – {formatTime(block.endMs)}
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  {/* The live badge already says "active"; the subtitle
-                      carries the useful fact: time left in the window. */}
-                  {b.isActive ? remainingLabel(b.endMs, t) : t("blocks.completed")}
-                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {remainingLabel(block.endMs, t)}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <ModelTags models={block.models} />
               </div>
             </div>
-            {b.isActive && <Badge variant="success">{t("blocks.live")}</Badge>}
-            <Metric label={t("blocks.cost")} value={formatCost(b.cost)} />
-            <Metric label={t("blocks.tokens")} value={formatTokens(b.totalTokens)} />
-            <Metric label={t("blocks.requests")} value={formatNumber(b.requests)} />
-            {b.burnRateTpm != null && (
+            <dl className="grid grid-cols-2 items-start gap-4 border-t border-border p-5 sm:grid-cols-3 min-[940px]:border-t-0 min-[940px]:border-l">
+              <Metric label={t("blocks.cost")} value={formatCost(block.cost)} />
               <Metric
-                label={t("blocks.burnRate")}
-                value={`${formatTokens(Math.round(b.burnRateTpm))}${t("unit.perMin")}`}
+                label={t("blocks.tokens")}
+                value={formatTokens(block.totalTokens)}
               />
-            )}
-            {b.burnRateCostPerHour != null && (
               <Metric
-                label={t("blocks.costRate")}
-                value={`${formatCost(b.burnRateCostPerHour)}${t("unit.perHour")}`}
+                label={t("blocks.requests")}
+                value={formatNumber(block.requests)}
               />
-            )}
-            <div className="ml-auto flex flex-wrap gap-1">
-              {b.models.slice(0, 4).map((m) => (
-                <Badge key={m} variant="outline">
-                  {shortModelName(m)}
-                </Badge>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+              {block.burnRateTpm != null && (
+                <Metric
+                  label={t("blocks.burnRate")}
+                  value={`${formatTokens(Math.round(block.burnRateTpm))}${t("unit.perMin")}`}
+                />
+              )}
+              {block.burnRateCostPerHour != null && (
+                <Metric
+                  label={t("blocks.costRate")}
+                  value={`${formatCost(block.burnRateCostPerHour)}${t("unit.perHour")}`}
+                />
+              )}
+            </dl>
+          </FramePanel>
+        </Frame>
       ))}
+      {history.length > 0 && (
+        <Frame aria-labelledby="billing-history">
+          <FrameHeader>
+            <h2 id="billing-history" className="text-sm font-semibold">
+              {t("blocks.history")}
+            </h2>
+          </FrameHeader>
+          <FramePanel>
+            <Table className="min-w-[560px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("th.time")}</TableHead>
+                  <TableHead>{t("th.models")}</TableHead>
+                  <TableHead className="text-right">
+                    {t("blocks.tokens")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("blocks.requests")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("blocks.cost")}
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {history.map((block) => (
+                  <TableRow key={block.id}>
+                    <TableCell className="font-medium whitespace-nowrap">
+                      {formatDateTime(block.startMs)} –{" "}
+                      {formatTime(block.endMs)}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        <ModelTags models={block.models} />
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatTokens(block.totalTokens)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatNumber(block.requests)}
+                    </TableCell>
+                    <TableCell className="text-right font-semibold tabular-nums">
+                      {formatCost(block.cost)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </FramePanel>
+        </Frame>
+      )}
     </div>
   );
+}
+
+function ModelTags({ models }: { models: string[] }) {
+  return models.slice(0, 4).map((model) => (
+    <Badge key={model} variant="outline" title={model}>
+      {shortModelName(model)}
+    </Badge>
+  ));
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="text-sm font-medium tabular-nums">{value}</div>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="mt-1 text-base font-semibold tabular-nums">{value}</dd>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, isCostMode, onEvent, type CostMode } from "./api";
 
 /** Where the main window used to persist the cost mode before the
@@ -27,14 +27,10 @@ async function migrateLegacyCostMode(): Promise<void> {
  * The backend's cost mode, kept live via `cost-mode-changed` (emitted to
  * every window). `mode` is null until the first read resolves; if the
  * backend can't be reached it falls back to "auto" so data still loads.
- * `setMode` is optimistic and rolls back (rejecting) if the backend
- * refuses the change.
+ * `setMode` applies the selection after the backend saves it.
  */
 export function useCostMode({ migrate = false }: { migrate?: boolean } = {}) {
   const [mode, setModeState] = useState<CostMode | null>(null);
-  const modeRef = useRef<CostMode | null>(null);
-  modeRef.current = mode;
-  const changeSeq = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,16 +57,8 @@ export function useCostMode({ migrate = false }: { migrate?: boolean } = {}) {
   }, [migrate]);
 
   const setMode = useCallback(async (next: CostMode) => {
-    const prev = modeRef.current;
-    const seq = ++changeSeq.current;
+    await api.setCostMode(next);
     setModeState(next);
-    try {
-      await api.setCostMode(next);
-    } catch (e) {
-      // Only roll back if no newer change has superseded this one.
-      if (seq === changeSeq.current) setModeState(prev);
-      throw e;
-    }
   }, []);
 
   return { mode, setMode };

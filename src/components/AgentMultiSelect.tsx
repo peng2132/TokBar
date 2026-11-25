@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Menu } from "@base-ui/react/menu";
 import { Check, Plus, X } from "lucide-react";
 import { AGENT_LABELS, agentLabel } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -15,20 +15,6 @@ export function AgentMultiSelect({
   onChange: (agents: string[]) => void;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
   const toggle = (key: string) =>
     onChange(
       value.includes(key) ? value.filter((k) => k !== key) : [...value, key],
@@ -56,51 +42,55 @@ export function AgentMultiSelect({
           </span>
         );
       })}
-      <div ref={ref} className="relative">
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
+      <Menu.Root modal={false}>
+        <Menu.Trigger
           className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
         >
-          <Plus className="h-3 w-3" />
+          <Plus className="h-3 w-3" aria-hidden />
           {value.length === 0
             ? t("settings.sub.pickAgents")
             : t("settings.sub.addAgent")}
-        </button>
-        {open && (
-          <div className="absolute left-0 z-20 mt-1 max-h-60 w-52 overflow-auto rounded-xl border border-border bg-card p-1 shadow-lg backdrop-blur-xl">
-            {Object.keys(AGENT_LABELS).map((key) => {
-              const checked = value.includes(key);
-              const brand = agentBrand(key);
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => toggle(key)}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-                >
-                  <span
-                    className={cn(
-                      "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
-                      checked
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border",
-                    )}
+        </Menu.Trigger>
+        <Menu.Portal>
+          <Menu.Positioner align="start" sideOffset={4} className="z-20">
+            <Menu.Popup className="max-h-[min(15rem,var(--available-height))] w-52 overflow-auto rounded-xl border border-border bg-card p-1 shadow-lg">
+              {Object.entries(AGENT_LABELS).map(([key, label]) => {
+                const checked = value.includes(key);
+                const brand = agentBrand(key);
+                return (
+                  <Menu.CheckboxItem
+                    key={key}
+                    checked={checked}
+                    closeOnClick={false}
+                    onCheckedChange={() => toggle(key)}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors data-highlighted:bg-accent focus-visible:-outline-offset-2"
                   >
-                    {checked && <Check className="h-3 w-3" />}
-                  </span>
-                  {brand ? (
-                    <BrandIcon brand={brand} className="h-4 w-4 shrink-0" />
-                  ) : (
-                    <span className="h-4 w-4 shrink-0" />
-                  )}
-                  {AGENT_LABELS[key]}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                        checked
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border",
+                      )}
+                    >
+                      <Menu.CheckboxItemIndicator>
+                        <Check className="h-3 w-3" />
+                      </Menu.CheckboxItemIndicator>
+                    </span>
+                    {brand ? (
+                      <BrandIcon brand={brand} className="h-4 w-4 shrink-0" />
+                    ) : (
+                      <span className="h-4 w-4 shrink-0" />
+                    )}
+                    {label}
+                  </Menu.CheckboxItem>
+                );
+              })}
+            </Menu.Popup>
+          </Menu.Positioner>
+        </Menu.Portal>
+      </Menu.Root>
     </div>
   );
 }

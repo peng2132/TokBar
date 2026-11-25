@@ -4019,7 +4019,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokbar"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -4035,6 +4035,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-opener",
  "tauri-plugin-positioner",
+ "tempfile",
  "thiserror 1.0.69",
  "ureq",
 ]

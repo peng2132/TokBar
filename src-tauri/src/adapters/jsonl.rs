@@ -11,7 +11,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// Stream lines of `path` from byte `offset`. Lines containing any of
-/// `needles` (all lines when empty) are passed to `f(line, complete)`;
+/// `needles` (all lines when empty) are passed to `f(line, complete, start)`;
 /// `complete` is false only for a trailing line without its `\n` yet
 /// (a writer mid-append). Returns the offset just past the last complete
 /// line, i.e. where the next incremental read must resume.
@@ -19,7 +19,7 @@ pub fn scan_lines(
     path: &Path,
     offset: u64,
     needles: &[&str],
-    mut f: impl FnMut(&str, bool),
+    mut f: impl FnMut(&str, bool, u64),
 ) -> std::io::Result<u64> {
     let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(offset))?;
@@ -33,6 +33,7 @@ pub fn scan_lines(
             break;
         }
         let complete = buf.last() == Some(&b'\n');
+        let start = consumed;
         if complete {
             consumed += n as u64;
         }
@@ -40,7 +41,7 @@ pub fn scan_lines(
             let line = line.trim();
             if !line.is_empty() && (needles.is_empty() || needles.iter().any(|n| line.contains(n)))
             {
-                f(line, complete);
+                f(line, complete, start);
             }
         }
         if !complete {
@@ -104,14 +105,14 @@ mod tests {
     fn resumes_at_last_complete_line() {
         let p = tmp_file("resume.jsonl", "{\"a\":1}\n{\"usage\":2}\n{\"usage\":3");
         let mut seen = Vec::new();
-        let end = scan_lines(&p, 0, &["usage"], |l, c| seen.push((l.to_string(), c))).unwrap();
+        let end = scan_lines(&p, 0, &["usage"], |l, c, _| seen.push((l.to_string(), c))).unwrap();
         assert_eq!(end, 20);
         assert_eq!(
             seen,
             vec![("{\"usage\":2}".to_string(), true), ("{\"usage\":3".to_string(), false)]
         );
         let mut again = Vec::new();
-        let end2 = scan_lines(&p, end, &[], |l, _| again.push(l.to_string())).unwrap();
+        let end2 = scan_lines(&p, end, &[], |l, _, _| again.push(l.to_string())).unwrap();
         assert_eq!(end2, end);
         assert_eq!(again, vec!["{\"usage\":3".to_string()]);
         assert!(tail_hash(&p, end).is_some());

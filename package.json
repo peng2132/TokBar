@@ -1,7 +1,7 @@
 {
   "name": "tokbar",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@base-ui/react": "^1.9.0",
     "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-autostart": "^2.5.1",

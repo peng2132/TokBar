@@ -15,6 +15,12 @@ export default defineConfig(async () => ({
     },
   },
 
+  // These subpaths first appear on the lazy Settings page. Pre-bundle
+  // them up front so opening Settings doesn't reload React mid-session.
+  optimizeDeps: {
+    include: ["@base-ui/react/switch", "@base-ui/react/tabs"],
+  },
+
   build: {
     rollupOptions: {
       output: {

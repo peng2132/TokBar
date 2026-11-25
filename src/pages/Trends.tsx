@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type DailyRow, type QueryParams } from "@/lib/api";
 import { formatCost, formatNumber, formatTokens } from "@/lib/format";
 import { useI18n, type I18nKey } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { EmptyState } from "@/components/EmptyState";
+import { Frame, FrameHeader, FramePanel } from "@/components/ui/frame";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import {
   Table,
   TableBody,
@@ -76,9 +77,10 @@ export function TrendsPage({
   const { t } = useI18n();
   // Rows remember which query they answer, so a range switch shows a
   // skeleton instead of the previous range's (or hourly vs daily) data.
-  const [loaded, setLoaded] = useState<{ key: string; rows: DailyRow[] } | null>(
-    null,
-  );
+  const [loaded, setLoaded] = useState<{
+    key: string;
+    rows: DailyRow[];
+  } | null>(null);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [bucket, setBucket] = useState<Bucket>("day");
@@ -137,89 +139,102 @@ export function TrendsPage({
   ];
 
   return (
-    <div className="space-y-4">
-      {!hourly && (
-        <div className="flex justify-end">
-          <div className="flex rounded-lg border border-border p-0.5">
-            {buckets.map((g) => (
-              <button
-                key={g.id}
-                onClick={() => setBucket(g.id)}
-                aria-pressed={bucket === g.id}
-                className={cn(
-                  "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                  bucket === g.id
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t(g.labelKey)}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      <Card>
-        <CardHeader>
-          <CardTitle>{t(`trends.cost.${granularity}` as const)}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <CostTrendChart rows={daily} granularity={granularity} />
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t(`trends.tokens.${granularity}` as const)}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <TokenTrendChart rows={daily} granularity={granularity} />
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t(`trends.breakdown.${granularity}` as const)}</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t(DATE_HEAD[granularity])}</TableHead>
-                <TableHead className="text-right">{t("th.input")}</TableHead>
-                <TableHead className="text-right">{t("th.output")}</TableHead>
-                <TableHead className="text-right">{t("th.cacheWrite")}</TableHead>
-                <TableHead className="text-right">{t("th.cacheRead")}</TableHead>
-                <TableHead className="text-right">{t("th.requests")}</TableHead>
-                <TableHead className="text-right">{t("th.cost")}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tableRows.map((r) => (
-                <TableRow key={r.date}>
-                  <TableCell className="font-medium">{r.date}</TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatTokens(r.inputTokens)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatTokens(r.outputTokens)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatTokens(r.cacheCreationTokens)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatTokens(r.cacheReadTokens)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {formatNumber(r.requests)}
-                  </TableCell>
-                  <TableCell className="text-right font-medium tabular-nums">
-                    {formatCost(r.cost)}
-                  </TableCell>
+    <div className="flex flex-col gap-5">
+      <Frame aria-labelledby="trends-charts">
+        <FrameHeader>
+          <h2 id="trends-charts" className="text-sm font-semibold">
+            {t("trends.usage")}
+          </h2>
+          {!hourly && (
+            <SegmentedControl
+              label={t("trends.granularity")}
+              options={buckets.map((item) => ({
+                id: item.id,
+                label: t(item.labelKey),
+              }))}
+              value={bucket}
+              onChange={setBucket}
+            />
+          )}
+        </FrameHeader>
+        <FramePanel>
+          {daily.length === 0 ? (
+            <EmptyState />
+          ) : (
+            <div className="grid divide-y divide-border min-[1220px]:grid-cols-2 min-[1220px]:divide-x min-[1220px]:divide-y-0">
+              <div className="min-w-0 p-4 sm:p-5">
+                <h3 className="mb-3 text-sm font-medium">
+                  {t(`trends.cost.${granularity}` as const)}
+                </h3>
+                <CostTrendChart rows={daily} granularity={granularity} />
+              </div>
+              <div className="min-w-0 p-4 sm:p-5">
+                <h3 className="mb-3 text-sm font-medium">
+                  {t(`trends.tokens.${granularity}` as const)}
+                </h3>
+                <TokenTrendChart rows={daily} granularity={granularity} />
+              </div>
+            </div>
+          )}
+        </FramePanel>
+      </Frame>
+      <Frame aria-labelledby="trends-breakdown">
+        <FrameHeader>
+          <h2 id="trends-breakdown" className="text-sm font-semibold">
+            {t(`trends.breakdown.${granularity}` as const)}
+          </h2>
+        </FrameHeader>
+        <FramePanel>
+          {tableRows.length === 0 ? (
+            <EmptyState />
+          ) : (
+            <Table className="min-w-[565px]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t(DATE_HEAD[granularity])}</TableHead>
+                  <TableHead className="text-right">{t("th.input")}</TableHead>
+                  <TableHead className="text-right">{t("th.output")}</TableHead>
+                  <TableHead className="text-right">
+                    {t("th.cacheWrite")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("th.cacheRead")}
+                  </TableHead>
+                  <TableHead className="text-right">
+                    {t("th.requests")}
+                  </TableHead>
+                  <TableHead className="text-right">{t("th.cost")}</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+              </TableHeader>
+              <TableBody>
+                {tableRows.map((r) => (
+                  <TableRow key={r.date}>
+                    <TableCell className="font-medium">{r.date}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatTokens(r.inputTokens)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatTokens(r.outputTokens)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatTokens(r.cacheCreationTokens)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatTokens(r.cacheReadTokens)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatNumber(r.requests)}
+                    </TableCell>
+                    <TableCell className="text-right font-medium tabular-nums">
+                      {formatCost(r.cost)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </FramePanel>
+      </Frame>
     </div>
   );
 }

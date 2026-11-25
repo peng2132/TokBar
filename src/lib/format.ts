@@ -1,4 +1,5 @@
 import type { I18nKey } from "./i18n";
+import type { LatestPerformance, Totals } from "./api";
 
 export function formatCost(value: number): string {
   if (value >= 1000) {
@@ -35,6 +36,40 @@ function uiLocale(): string {
         ? "zh"
         : "en";
   return lang === "zh" ? "zh-CN" : "en-US";
+}
+
+export function formatOutputSpeed(value: number): string {
+  const rate = new Intl.NumberFormat(uiLocale(), {
+    maximumFractionDigits: 1,
+  }).format(value);
+  return `${rate} tok/s`;
+}
+
+export function formatFirstToken(ms: number): string {
+  const seconds = ms >= 1000;
+  const value = new Intl.NumberFormat(uiLocale(), {
+    maximumFractionDigits: seconds ? 2 : 0,
+  }).format(seconds ? ms / 1000 : ms);
+  return `${value} ${seconds ? "s" : "ms"}`;
+}
+
+export function formatCacheHitRate(
+  tokens: Pick<Totals, "inputTokens" | "cacheCreationTokens" | "cacheReadTokens">,
+): string | null {
+  const promptTokens =
+    tokens.inputTokens + tokens.cacheCreationTokens + tokens.cacheReadTokens;
+  if (promptTokens <= 0) return null;
+  return new Intl.NumberFormat(uiLocale(), {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(tokens.cacheReadTokens / promptTokens);
+}
+
+export function performanceSourceLabel({
+  source,
+  provider,
+}: Pick<LatestPerformance, "source" | "provider">): string {
+  return provider ? `${agentLabel(source)} · ${provider}` : agentLabel(source);
 }
 
 export function formatDateTime(ms: number): string {
@@ -98,6 +133,7 @@ export function modelDisplayNames(models: string[]): Map<string, string> {
 export const AGENT_LABELS: Record<string, string> = {
   "claude-code": "Claude Code",
   codex: "Codex CLI",
+  magpie: "Magpie",
   kimi: "Kimi CLI",
   gemini: "Gemini CLI",
   opencode: "OpenCode",

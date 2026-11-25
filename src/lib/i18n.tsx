@@ -6,13 +6,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api } from "./api";
 
 export type Lang = "zh" | "en";
 
 const en = {
   // App shell
-  "app.subtitle": "AI Usage Dashboard",
+  "app.navigation": "Navigation",
+  "app.dateRange": "Date range",
+  "app.starting": "Opening your usage data…",
   "nav.overview": "Overview",
   "nav.trends": "Trends",
   "nav.sessions": "Sessions",
@@ -32,19 +33,25 @@ const en = {
   "range.all": "All",
 
   // Overview
-  "overview.totalCost": "Total Cost",
+  "overview.totalCost": "Estimated cost",
+  "overview.apiCostEstimate": "API list-price estimate",
+  "overview.reportedCost": "Reported cost",
+  "overview.codexPricing":
+    "Codex tiers · {returned} returned · {sent} sent · {estimated} estimated",
   "overview.totalTokens": "Total Tokens",
   "overview.requests": "Requests",
   "overview.sessions": "Sessions",
   "overview.activeDays": "{n} active days",
   "overview.inOut": "in {in} / out {out}",
   "overview.cacheRead": "cache read {n}",
+  "overview.cacheHitRate": "Cache hit rate",
+  "overview.usageSummary": "Usage summary",
   "overview.agents": "{n} agents",
   "overview.costTrend": "Cost Trend",
-  "overview.costByModel": "Cost by Model",
-  "overview.costByAgent": "Cost by Agent",
+  "overview.costDistribution": "Cost distribution",
+  "overview.costByModel": "By model",
+  "overview.costByAgent": "By agent",
   "overview.topProjects": "Top Projects",
-  "overview.projectStats": "{cost} · {tokens} tok · {sessions} sessions",
   "common.empty": "No usage data in this period",
   "common.loadFailed": "Failed to load data",
   "common.retry": "Retry",
@@ -65,6 +72,7 @@ const en = {
   "th.output": "Output",
   "th.cacheWrite": "Cache Write",
   "th.cacheRead": "Cache Read",
+  "th.cacheReadHit": "Cache Read / Hit Rate",
   "th.requests": "Requests",
   "th.cost": "Cost",
   "th.project": "Project",
@@ -76,6 +84,8 @@ const en = {
 
   // Trends
   "trends.byDay": "Daily",
+  "trends.usage": "Usage over time",
+  "trends.granularity": "Grouping interval",
   "trends.byWeek": "Weekly",
   "trends.byMonth": "Monthly",
   "trends.cost.hour": "Hourly Cost",
@@ -98,20 +108,33 @@ const en = {
   // Sessions
   "sessions.title": "Sessions",
   "sessions.empty": "No sessions in this period",
+  "sessions.noMatch": "No sessions match the current filters",
+  "sessions.details": "Session details for {project}",
   "sessions.search": "Search project / session / model…",
   "sessions.allAgents": "All",
 
   // Models
-  "models.costDist": "Cost Distribution",
-  "models.tokenDist": "Token Distribution",
-  "models.all": "All Models",
+  "models.all": "Model usage",
+  "models.distribution": "Model distribution",
+  "distribution.other": "Other",
+  "models.cacheHitTip": "Cache reads ÷ (uncached input + cache writes + cache reads), from recorded tokens.",
+  "performance.title": "Generation Performance",
+  "performance.description":
+    "Codex measures visible text and the first token of each turn. Magpie measures streamed requests by provider.",
+  "performance.output": "Median Output Speed",
+  "performance.firstToken": "Median First Token",
+  "performance.samples": "{n} samples",
+  "performance.source": "Timing Source",
+  "performance.empty": "No timing samples in this period",
+  "performance.expand": "Show all {n}",
+  "performance.collapse": "Show fewer",
 
   // Blocks
   "blocks.desc":
     "5-hour billing blocks: each agent's usage is grouped into 5-hour windows aligned to the hour, matching Claude's session billing window. Last {days} days.",
   "blocks.empty": "No billing blocks in the last {days} days",
-  "blocks.completed": "Completed",
-  "blocks.live": "LIVE",
+  "blocks.live": "Active",
+  "blocks.history": "Billing history",
   "blocks.cost": "Cost",
   "blocks.tokens": "Tokens",
   "blocks.requests": "Requests",
@@ -120,8 +143,8 @@ const en = {
 
   // Settings
   "settings.language": "Language",
-  "settings.languageDesc": "Display language for the interface.",
   "settings.general": "General",
+  "settings.dataAndPricing": "Data & pricing",
   "settings.autostart": "Launch at login",
   "settings.autostartDesc": "Start TokBar automatically when you log in.",
   "settings.appearance": "Appearance",
@@ -154,6 +177,7 @@ const en = {
   "notch.collapse": "Hide usage details",
   "settings.dataSources": "Data Sources",
   "settings.sources.inactive": "Not detected ({n})",
+  "settings.performanceSource": "Timing and Codex service tiers",
   "settings.files": "{n} files",
   "settings.lastScan":
     "Last scan: {parsed} of {total} files re-parsed, {entries} entries updated in {ms} ms.",
@@ -191,6 +215,8 @@ const en = {
   "quick.todayTokens": "Tokens Today",
   "quick.todayRequests": "Requests Today",
   "quick.monthCost": "This Month",
+  "quick.latestSpeed": "Latest Output Speed",
+  "quick.noSpeed": "No measured output yet",
   "quick.activeBlock": "Active Billing Block",
   "quick.noActiveBlock": "No active billing block",
   "quick.burnRate": "Burn rate",
@@ -220,6 +246,7 @@ const en = {
   "settings.sub.pickAgents": "Pick agents",
   "settings.sub.addAgent": "Add",
   "settings.sub.perMonth": "/mo",
+  "settings.sub.monthlyCost": "Monthly cost in USD",
   "settings.sub.quickAdd": "Quick add",
   "settings.sub.custom": "Custom",
   "settings.sub.remove": "Remove",
@@ -229,7 +256,9 @@ const en = {
 };
 
 const zh: Record<keyof typeof en, string> = {
-  "app.subtitle": "AI 用量仪表盘",
+  "app.navigation": "页面导航",
+  "app.dateRange": "日期范围",
+  "app.starting": "正在打开本地用量数据…",
   "nav.overview": "总览",
   "nav.trends": "趋势",
   "nav.sessions": "会话",
@@ -248,19 +277,25 @@ const zh: Record<keyof typeof en, string> = {
   "range.90d": "90天",
   "range.all": "全部",
 
-  "overview.totalCost": "总成本",
+  "overview.totalCost": "用量费用估算",
+  "overview.apiCostEstimate": "API 标价估算",
+  "overview.reportedCost": "日志金额",
+  "overview.codexPricing":
+    "Codex 档位 · 上游返回 {returned} · 请求发送 {sent} · 估算 {estimated}",
   "overview.totalTokens": "总 Token",
   "overview.requests": "请求数",
   "overview.sessions": "会话数",
   "overview.activeDays": "{n} 个活跃天",
   "overview.inOut": "输入 {in} / 输出 {out}",
   "overview.cacheRead": "缓存读取 {n}",
+  "overview.cacheHitRate": "缓存命中率",
+  "overview.usageSummary": "用量摘要",
   "overview.agents": "{n} 个 Agent",
   "overview.costTrend": "成本趋势",
-  "overview.costByModel": "按模型分布",
-  "overview.costByAgent": "按 Agent 分布",
+  "overview.costDistribution": "成本分布",
+  "overview.costByModel": "按模型",
+  "overview.costByAgent": "按 Agent",
   "overview.topProjects": "项目排行",
-  "overview.projectStats": "{cost} · {tokens} tok · {sessions} 个会话",
   "common.empty": "该时间段内暂无使用数据",
   "common.loadFailed": "数据加载失败",
   "common.retry": "重试",
@@ -279,6 +314,7 @@ const zh: Record<keyof typeof en, string> = {
   "th.output": "输出",
   "th.cacheWrite": "缓存写入",
   "th.cacheRead": "缓存读取",
+  "th.cacheReadHit": "缓存读取 / 命中率",
   "th.requests": "请求数",
   "th.cost": "成本",
   "th.project": "项目",
@@ -289,6 +325,8 @@ const zh: Record<keyof typeof en, string> = {
   "th.model": "模型",
 
   "trends.byDay": "按日",
+  "trends.usage": "用量走势",
+  "trends.granularity": "时间粒度",
   "trends.byWeek": "按周",
   "trends.byMonth": "按月",
   "trends.cost.hour": "每小时成本",
@@ -310,18 +348,30 @@ const zh: Record<keyof typeof en, string> = {
 
   "sessions.title": "会话",
   "sessions.empty": "该时间段内暂无会话",
+  "sessions.noMatch": "没有符合筛选条件的会话",
+  "sessions.details": "查看 {project} 的会话明细",
   "sessions.search": "搜索项目 / 会话 / 模型…",
   "sessions.allAgents": "全部",
 
-  "models.costDist": "成本分布",
-  "models.tokenDist": "Token 分布",
-  "models.all": "全部模型",
+  "models.all": "模型用量",
+  "models.distribution": "模型分布",
+  "distribution.other": "其余",
+  "models.cacheHitTip": "缓存读取占输入 Token 的比例，分母含未缓存输入、缓存写入和缓存读取。",
+  "performance.title": "生成性能",
+  "performance.description": "Codex 统计可见正文速度和回合首 Token。Magpie 按服务商统计流式请求。",
+  "performance.output": "输出速度中位数",
+  "performance.firstToken": "首 Token 延迟中位数",
+  "performance.samples": "{n} 个样本",
+  "performance.source": "计时来源",
+  "performance.empty": "该时间段内暂无计时样本",
+  "performance.expand": "显示全部 {n} 组",
+  "performance.collapse": "收起",
 
   "blocks.desc":
     "5 小时计费块:每个 Agent 的用量按整点对齐的 5 小时窗口分组,对应 Claude 的会话计费窗口。显示最近 {days} 天。",
   "blocks.empty": "最近 {days} 天内没有计费块",
-  "blocks.completed": "已结束",
   "blocks.live": "进行中",
+  "blocks.history": "历史计费块",
   "blocks.cost": "成本",
   "blocks.tokens": "Token",
   "blocks.requests": "请求数",
@@ -329,8 +379,8 @@ const zh: Record<keyof typeof en, string> = {
   "blocks.costRate": "成本速率",
 
   "settings.language": "语言",
-  "settings.languageDesc": "界面显示语言。",
   "settings.general": "通用",
+  "settings.dataAndPricing": "数据与计价",
   "settings.autostart": "开机自启",
   "settings.autostartDesc": "登录系统时自动启动 TokBar。",
   "settings.appearance": "外观",
@@ -362,6 +412,7 @@ const zh: Record<keyof typeof en, string> = {
   "notch.collapse": "收起用量详情",
   "settings.dataSources": "数据源",
   "settings.sources.inactive": "未检测到 ({n})",
+  "settings.performanceSource": "计时与 Codex 请求档位",
   "settings.files": "{n} 个文件",
   "settings.lastScan":
     "上次扫描:重新解析 {parsed}/{total} 个文件,更新 {entries} 条记录,耗时 {ms} 毫秒。",
@@ -396,6 +447,8 @@ const zh: Record<keyof typeof en, string> = {
   "quick.todayTokens": "今日 Token",
   "quick.todayRequests": "今日请求",
   "quick.monthCost": "本月成本",
+  "quick.latestSpeed": "最近输出速度",
+  "quick.noSpeed": "暂无实测输出速度",
   "quick.activeBlock": "活跃计费块",
   "quick.noActiveBlock": "当前没有活跃计费块",
   "quick.burnRate": "燃烧率",
@@ -425,6 +478,7 @@ const zh: Record<keyof typeof en, string> = {
   "settings.sub.pickAgents": "选择 Agent",
   "settings.sub.addAgent": "添加",
   "settings.sub.perMonth": "/月",
+  "settings.sub.monthlyCost": "每月费用（美元）",
   "settings.sub.quickAdd": "快速添加",
   "settings.sub.custom": "自定义",
   "settings.sub.remove": "删除",
@@ -476,11 +530,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  // The backend localizes the menu-bar tooltip; tell it on startup and on
-  // every change. Idempotent, so every window reporting the same
-  // (shared, storage-synced) language is harmless.
   useEffect(() => {
-    api.setLanguage(lang).catch((e) => console.error("set_language failed:", e));
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   }, [lang]);
 
   const t = useCallback(

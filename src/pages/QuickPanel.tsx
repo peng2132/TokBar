@@ -19,6 +19,9 @@ import { useI18n } from "@/lib/i18n";
 import { useTodayStats } from "@/lib/useTodayStats";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/Logo";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { LatestOutput } from "@/components/LatestOutput";
 
 export function QuickPanel() {
   const { t } = useI18n();
@@ -83,153 +86,164 @@ export function QuickPanel() {
   const block = stats?.activeBlock ?? null;
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden rounded-2xl border border-border bg-background p-4 text-foreground">
-      {/* Header */}
-      <div className="mb-3 flex items-center justify-between">
+    <div className="flex h-full flex-col overflow-hidden rounded-[16px] border border-border bg-card text-foreground">
+      <header className="flex h-13 shrink-0 items-center justify-between border-b border-border px-4">
         <div className="flex items-center gap-2">
-          <Logo size={24} />
-          <span className="text-sm font-semibold">TokBar</span>
+          <Logo size={23} />
+          <span className="text-sm font-semibold tracking-tight">TokBar</span>
         </div>
-        <button
-          onClick={refresh}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => void refresh()}
           disabled={refreshing}
-          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           title={refreshFailed ? t("app.refreshFailed") : t("app.refresh")}
           aria-label={refreshFailed ? t("app.refreshFailed") : t("app.refresh")}
         >
           {refreshFailed && !refreshing ? (
-            <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
+            <AlertTriangle className="size-4 text-danger" />
           ) : justRefreshed && !refreshing ? (
-            <Check className="h-3.5 w-3.5 text-primary" />
+            <Check className="size-4 text-success" />
           ) : (
-            <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+            <RefreshCw
+              className={cn("size-4", refreshing && "motion-safe:animate-spin")}
+            />
+          )}
+        </Button>
+      </header>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pt-3.5 pb-3">
+        {error && (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-2 rounded-lg bg-danger-surface px-3 py-1.5 text-xs text-danger"
+          >
+            <span className="flex items-center gap-1.5">
+              <AlertTriangle className="size-3.5" />
+              {t("common.loadFailed")}
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => void reload()}>
+              {t("common.retry")}
+            </Button>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => void openPage("overview")}
+          className="w-full rounded-lg text-left"
+        >
+          <div className="text-xs font-medium text-muted-foreground">
+            {t("quick.todayCost")}
+          </div>
+          <div className="mt-1 text-[34px] leading-none font-semibold tracking-[-0.045em] tabular-nums">
+            {stats ? formatCost(stats.todayCost) : "—"}
+          </div>
+        </button>
+        <div className="grid grid-cols-3 divide-x divide-border rounded-lg border border-border bg-background/65">
+          <MiniStat
+            label={t("quick.todayTokens")}
+            value={stats ? formatTokens(stats.todayTokens) : "—"}
+            onClick={() => void openPage("models")}
+          />
+          <MiniStat
+            label={t("quick.todayRequests")}
+            value={stats ? formatNumber(stats.todayRequests) : "—"}
+            onClick={() => void openPage("sessions")}
+          />
+          <MiniStat
+            label={t("quick.monthCost")}
+            value={stats?.monthCost != null ? formatCost(stats.monthCost) : "—"}
+            onClick={() => void openPage("trends")}
+          />
+        </div>
+
+        <LatestOutput
+          sample={stats?.latestPerformance}
+          loading={!stats}
+          onClick={() => void openPage("models")}
+        />
+
+        <button
+          type="button"
+          onClick={() => void openPage("blocks")}
+          className="w-full rounded-lg border border-border px-3 py-2.5 text-left transition-colors hover:bg-accent/35"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-medium">
+              <Flame className="size-3.5 text-muted-foreground" aria-hidden />
+              {t("quick.activeBlock")}
+            </span>
+            {block && (
+              <Badge variant="success" className="text-[10px]">
+                {agentLabel(block.agent)}
+              </Badge>
+            )}
+          </div>
+          {block ? (
+            <>
+              <div className="mt-2 flex items-baseline justify-between gap-3">
+                <span className="text-lg font-semibold tabular-nums">
+                  {formatCost(block.cost)}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {formatTokens(block.totalTokens)} {t("unit.tok")}
+                </span>
+              </div>
+              <dl className="mt-2 flex flex-col gap-1 border-t border-border pt-2 text-[11px]">
+                {block.burnRateTpm != null && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">
+                      {t("quick.burnRate")}
+                    </dt>
+                    <dd className="tabular-nums">
+                      {formatTokens(Math.round(block.burnRateTpm))}
+                      {t("unit.perMin")}
+                    </dd>
+                  </div>
+                )}
+                {block.burnRateCostPerHour != null && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted-foreground">
+                      {t("quick.costRate")}
+                    </dt>
+                    <dd className="tabular-nums">
+                      {formatCost(block.burnRateCostPerHour)}
+                      {t("unit.perHour")}
+                    </dd>
+                  </div>
+                )}
+                <div className="flex justify-between gap-2">
+                  <dt className="text-muted-foreground">
+                    {t("quick.blockEnds")}
+                  </dt>
+                  <dd className="tabular-nums">{formatTime(block.endMs)}</dd>
+                </div>
+              </dl>
+            </>
+          ) : (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              {t("quick.noActiveBlock")}
+            </p>
           )}
         </button>
       </div>
 
-      {/* Load failure: keep the last good numbers, say they may be stale. */}
-      {error && (
-        <div
-          role="alert"
-          className="mb-3 flex items-center justify-between gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs text-red-500"
+      <footer className="shrink-0 border-t border-border px-4 py-3">
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() =>
+            api
+              .showMainWindow()
+              .catch((error) =>
+                console.error("opening the dashboard failed:", error),
+              )
+          }
         >
-          <span className="flex items-center gap-1.5">
-            <AlertTriangle className="h-3.5 w-3.5" />
-            {t("common.loadFailed")}
-          </span>
-          <button
-            type="button"
-            onClick={() => void reload()}
-            className="rounded px-1.5 py-0.5 font-medium transition-colors hover:bg-red-500/10"
-          >
-            {t("common.retry")}
-          </button>
-        </div>
-      )}
-
-      {/* Today cost — every card deep-links into the matching page */}
-      <button
-        type="button"
-        onClick={() => openPage("overview")}
-        className="w-full rounded-xl bg-card p-4 text-left transition-colors hover:bg-accent/60"
-      >
-        <div className="text-xs text-muted-foreground">{t("quick.todayCost")}</div>
-        <div className="mt-1 text-3xl font-bold tabular-nums text-primary">
-          {stats ? formatCost(stats.todayCost) : "—"}
-        </div>
-      </button>
-
-      {/* Stats grid */}
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        <MiniStat
-          label={t("quick.todayTokens")}
-          value={stats ? formatTokens(stats.todayTokens) : "—"}
-          onClick={() => openPage("models")}
-        />
-        <MiniStat
-          label={t("quick.todayRequests")}
-          value={stats ? formatNumber(stats.todayRequests) : "—"}
-          onClick={() => openPage("sessions")}
-        />
-        <MiniStat
-          label={t("quick.monthCost")}
-          value={stats?.monthCost != null ? formatCost(stats.monthCost) : "—"}
-          onClick={() => openPage("trends")}
-        />
-      </div>
-
-      {/* Active block (of the most recently active agent; blocks are per
-          agent, so the header names whose it is). */}
-      <button
-        type="button"
-        onClick={() => openPage("blocks")}
-        className="mt-3 w-full flex-1 rounded-xl bg-card p-4 text-left transition-colors hover:bg-accent/60"
-      >
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Flame
-            className={cn("h-3.5 w-3.5 shrink-0", block ? "text-primary" : "")}
-          />
-          <span className="truncate">
-            {t("quick.activeBlock")}
-            {block && ` · ${agentLabel(block.agent)}`}
-          </span>
-        </div>
-        {block ? (
-          <div className="mt-2 space-y-2">
-            <div className="flex items-baseline justify-between">
-              <span className="text-xl font-semibold tabular-nums">
-                {formatCost(block.cost)}
-              </span>
-              <span className="text-xs text-muted-foreground">
-                {formatTokens(block.totalTokens)} {t("unit.tok")}
-              </span>
-            </div>
-            <div className="space-y-1 text-xs text-muted-foreground">
-              {block.burnRateTpm != null && (
-                <div className="flex justify-between">
-                  <span>{t("quick.burnRate")}</span>
-                  <span className="tabular-nums text-foreground">
-                    {formatTokens(Math.round(block.burnRateTpm))}
-                    {t("unit.perMin")}
-                  </span>
-                </div>
-              )}
-              {block.burnRateCostPerHour != null && (
-                <div className="flex justify-between">
-                  <span>{t("quick.costRate")}</span>
-                  <span className="tabular-nums text-foreground">
-                    {formatCost(block.burnRateCostPerHour)}
-                    {t("unit.perHour")}
-                  </span>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span>{t("quick.blockEnds")}</span>
-                <span className="tabular-nums text-foreground">
-                  {formatTime(block.endMs)}
-                </span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="mt-3 text-sm text-muted-foreground">
-            {t("quick.noActiveBlock")}
-          </div>
-        )}
-      </button>
-
-      {/* Footer */}
-      <button
-        onClick={() =>
-          api
-            .showMainWindow()
-            .catch((e) => console.error("opening the dashboard failed:", e))
-        }
-        className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-primary py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
-      >
-        <LayoutDashboard className="h-4 w-4" />
-        {t("quick.openDashboard")}
-      </button>
+          <LayoutDashboard aria-hidden className="size-4" />
+          {t("quick.openDashboard")}
+        </Button>
+      </footer>
     </div>
   );
 }
@@ -247,10 +261,15 @@ function MiniStat({
     <button
       type="button"
       onClick={onClick}
-      className="min-w-0 rounded-xl bg-card p-3 text-left transition-colors hover:bg-accent/60"
+      className="min-w-0 px-2.5 py-2 text-left transition-colors first:rounded-l-lg last:rounded-r-lg hover:bg-accent/65"
     >
-      <div className="truncate text-[10px] text-muted-foreground">{label}</div>
-      <div className="mt-0.5 truncate text-sm font-semibold tabular-nums">
+      <div className="truncate text-[10px] text-muted-foreground" title={label}>
+        {label}
+      </div>
+      <div
+        className="mt-0.5 truncate text-sm font-semibold tabular-nums"
+        title={value}
+      >
         {value}
       </div>
     </button>

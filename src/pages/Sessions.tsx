@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ChevronRight, Search } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Search } from "lucide-react";
 import {
   api,
   type ModelRow,
@@ -16,7 +16,9 @@ import {
 } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Frame, FrameHeader, FramePanel } from "@/components/ui/frame";
+import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/EmptyState";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -110,11 +112,12 @@ export function SessionsPage({
     [sessions],
   );
 
+  const selectedAgent = agents.includes(agentFilter) ? agentFilter : "all";
   const filtered = useMemo(() => {
     if (!sessions) return [];
     const q = search.trim().toLowerCase();
     return sessions.filter((s) => {
-      if (agentFilter !== "all" && s.agent !== agentFilter) return false;
+      if (selectedAgent !== "all" && s.agent !== selectedAgent) return false;
       if (!q) return true;
       return (
         s.project.toLowerCase().includes(q) ||
@@ -122,7 +125,7 @@ export function SessionsPage({
         s.models.toLowerCase().includes(q)
       );
     });
-  }, [sessions, search, agentFilter]);
+  }, [sessions, search, selectedAgent]);
 
   const toggleExpand = (s: SessionRow) => {
     const key = sessionKey(s);
@@ -137,93 +140,95 @@ export function SessionsPage({
   }
 
   return (
-    <Card>
-      <CardHeader className="gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <CardTitle>
-            {t("sessions.title")}{" "}
-            <span className="text-xs font-normal">({filtered.length})</span>
-          </CardTitle>
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Agent filter */}
-            <div className="flex rounded-lg border border-border p-0.5">
-              <button
-                onClick={() => setAgentFilter("all")}
-                className={cn(
-                  "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                  agentFilter === "all"
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {t("sessions.allAgents")}
-              </button>
-              {agents.map((a) => (
-                <button
-                  key={a}
-                  onClick={() => setAgentFilter(a)}
-                  className={cn(
-                    "rounded-md px-3 py-1 text-xs font-medium transition-colors",
-                    agentFilter === a
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {agentLabel(a)}
-                </button>
-              ))}
-            </div>
-            {/* Search */}
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("sessions.search")}
-                className="h-8 w-56 rounded-lg border border-border bg-transparent pl-8 pr-3 text-xs outline-none transition-colors focus:border-primary"
-              />
-            </div>
-          </div>
+    <Frame aria-labelledby="sessions-heading">
+      <FrameHeader className="gap-3">
+        <div className="flex items-center gap-2">
+          <h2 id="sessions-heading" className="text-sm font-semibold">
+            {t("sessions.title")}
+          </h2>
+          <Badge variant="outline" className="bg-card tabular-nums">
+            {formatNumber(filtered.length)}
+          </Badge>
         </div>
-      </CardHeader>
-      <CardContent className="p-0">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-8" />
-              <TableHead>{t("th.project")}</TableHead>
-              <TableHead>{t("th.agent")}</TableHead>
-              <TableHead>{t("th.models")}</TableHead>
-              <TableHead>{t("th.lastActivity")}</TableHead>
-              <TableHead className="text-right">{t("th.requests")}</TableHead>
-              <TableHead className="text-right">{t("th.tokens")}</TableHead>
-              <TableHead className="text-right">{t("th.cost")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.map((s) => {
-              const key = sessionKey(s);
-              const isOpen = expanded === key;
-              return (
-                <SessionRowGroup
-                  key={key}
-                  session={s}
-                  isOpen={isOpen}
-                  detail={detail[key]}
-                  onToggle={() => toggleExpand(s)}
-                  onRetry={() => retryDetail(key)}
-                />
-              );
-            })}
-          </TableBody>
-        </Table>
-        {filtered.length === 0 && (
-          <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-            {t("sessions.empty")}
-          </div>
+        <div className="flex max-w-full flex-wrap items-center gap-2">
+          <label className="relative">
+            <Search
+              aria-hidden
+              className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={t("sessions.search")}
+              aria-label={t("sessions.search")}
+              className="w-57 max-w-full pl-8 text-xs"
+            />
+          </label>
+          <label className="relative">
+            <select
+              aria-label={t("th.agent")}
+              value={selectedAgent}
+              onChange={(event) => setAgentFilter(event.target.value)}
+              className="h-8 max-w-48 appearance-none rounded-lg border border-input bg-card pr-7 pl-2.5 text-xs font-medium shadow-[var(--control-shadow)]"
+            >
+              <option value="all">{t("sessions.allAgents")}</option>
+              {agents.map((agent) => (
+                <option key={agent} value={agent}>
+                  {agentLabel(agent)}
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              aria-hidden
+              className="pointer-events-none absolute top-1/2 right-2 size-3.5 -translate-y-1/2 text-muted-foreground"
+            />
+          </label>
+        </div>
+      </FrameHeader>
+      <FramePanel>
+        {filtered.length === 0 ? (
+          <EmptyState
+            message={
+              sessions.length === 0
+                ? t("sessions.empty")
+                : t("sessions.noMatch")
+            }
+          />
+        ) : (
+          <Table className="min-w-[720px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-8" />
+                <TableHead>{t("th.project")}</TableHead>
+                <TableHead>{t("th.agent")}</TableHead>
+                <TableHead>{t("th.models")}</TableHead>
+                <TableHead>{t("th.lastActivity")}</TableHead>
+                <TableHead className="text-right">{t("th.requests")}</TableHead>
+                <TableHead className="text-right">{t("th.tokens")}</TableHead>
+                <TableHead className="text-right">{t("th.cost")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((s) => {
+                const key = sessionKey(s);
+                const isOpen = expanded === key;
+                return (
+                  <SessionRowGroup
+                    key={key}
+                    session={s}
+                    isOpen={isOpen}
+                    detail={detail[key]}
+                    onToggle={() => toggleExpand(s)}
+                    onRetry={() => retryDetail(key)}
+                  />
+                );
+              })}
+            </TableBody>
+          </Table>
         )}
-      </CardContent>
-    </Card>
+      </FramePanel>
+    </Frame>
   );
 }
 
@@ -245,28 +250,36 @@ function SessionRowGroup({
     <>
       <TableRow
         onClick={onToggle}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onToggle();
-          }
-        }}
-        tabIndex={0}
-        aria-expanded={isOpen}
-        className="cursor-pointer focus-visible:bg-accent/50 focus-visible:outline-none"
+        className={cn("cursor-pointer", isOpen && "bg-muted/45")}
       >
-        <TableCell className="pr-0">
-          <ChevronRight
-            className={cn(
-              "h-3.5 w-3.5 text-muted-foreground transition-transform",
-              isOpen && "rotate-90",
-            )}
-          />
+        <TableCell className="w-10 pr-0 pl-2">
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="size-6"
+            aria-expanded={isOpen}
+            aria-label={t("sessions.details", { project: s.project })}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle();
+            }}
+          >
+            <ChevronRight
+              className={cn(
+                "size-3.5 transition-transform motion-reduce:transition-none",
+                isOpen && "rotate-90",
+              )}
+              aria-hidden
+            />
+          </Button>
         </TableCell>
         <TableCell>
           <div className="max-w-56">
-            <div className="truncate font-medium">{s.project}</div>
-            <div className="truncate font-mono text-xs text-muted-foreground">
+            <div className="truncate font-medium" title={s.project}>
+              {s.project}
+            </div>
+            <div className="truncate font-mono text-[11px] text-muted-foreground select-text">
               {s.sessionId}
             </div>
           </div>
@@ -323,25 +336,25 @@ function SessionRowGroup({
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-muted-foreground">
-                    <th className="px-10 py-2 text-left font-medium uppercase tracking-wide">
+                    <th className="px-10 py-2 text-left font-medium ">
                       {t("th.model")}
                     </th>
-                    <th className="px-3 py-2 text-right font-medium uppercase tracking-wide">
+                    <th className="px-3 py-2 text-right font-medium ">
                       {t("th.input")}
                     </th>
-                    <th className="px-3 py-2 text-right font-medium uppercase tracking-wide">
+                    <th className="px-3 py-2 text-right font-medium ">
                       {t("th.output")}
                     </th>
-                    <th className="px-3 py-2 text-right font-medium uppercase tracking-wide">
+                    <th className="px-3 py-2 text-right font-medium ">
                       {t("th.cacheWrite")}
                     </th>
-                    <th className="px-3 py-2 text-right font-medium uppercase tracking-wide">
+                    <th className="px-3 py-2 text-right font-medium ">
                       {t("th.cacheRead")}
                     </th>
-                    <th className="px-3 py-2 text-right font-medium uppercase tracking-wide">
+                    <th className="px-3 py-2 text-right font-medium ">
                       {t("th.requests")}
                     </th>
-                    <th className="px-3 py-2 text-right font-medium uppercase tracking-wide">
+                    <th className="px-3 py-2 text-right font-medium ">
                       {t("th.cost")}
                     </th>
                   </tr>

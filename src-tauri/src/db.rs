@@ -7,16 +7,17 @@ use chrono::{Local, TimeZone};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
-use crate::adapters::{self, jsonl, AdapterDef};
+use crate::adapters::{self, jsonl, AdapterDef, Parser, RequestPricing};
 use crate::cost::{calculate_cost, calculate_cost_with, TokenCounts};
-use crate::pricing::PricingMap;
+use crate::performance::PerformanceSample;
+use crate::pricing::{PricingMap, ServiceTier};
 use crate::types::UsageRecord;
 
-/// Bump when parsing semantics change so every file is re-parsed. Stored
-/// usage is kept across bumps: rows of files that still exist are
-/// replaced by the re-parse, rows of files their agent has since deleted
-/// stay as history. (Pricing changes need no bump — see `reprice`.)
-const SCHEMA_VERSION: i64 = 4;
+/// Bump when the schema or parser semantics change. Keep stored usage so
+/// entries from logs an agent has since deleted stay available as history.
+const SCHEMA_VERSION: i64 = 6;
+/// Re-read the metadata in an append-only file while keeping its usage cursor.
+const METADATA_BACKFILL_MTIME: i64 = -1;
 
 /// Lock a mutex even if a panicking thread poisoned it: every write here
 /// is transactional, so the data behind it is still consistent.
@@ -55,6 +56,33 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
          CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date_local);
          CREATE INDEX IF NOT EXISTS idx_entries_file ON entries(file_path);
          CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(agent, session_id);
+         CREATE TABLE IF NOT EXISTS performance_samples (
+           source TEXT NOT NULL,
+           sample_key TEXT NOT NULL,
+           file_path TEXT NOT NULL,
+           timestamp_ms INTEGER NOT NULL,
+           model TEXT NOT NULL,
+           provider TEXT NOT NULL,
+           output_tps REAL,
+           first_token_ms INTEGER,
+           PRIMARY KEY (source, sample_key)
+         );
+         CREATE INDEX IF NOT EXISTS idx_performance_file ON performance_samples(file_path);
+         CREATE INDEX IF NOT EXISTS idx_performance_ts ON performance_samples(timestamp_ms);
+         CREATE INDEX IF NOT EXISTS idx_performance_latest ON performance_samples(timestamp_ms)
+           WHERE output_tps IS NOT NULL;
+         CREATE TABLE IF NOT EXISTS codex_responses (
+           usage_key TEXT PRIMARY KEY,
+           response_id TEXT NOT NULL,
+           applied_entry_id INTEGER,
+           applied_tier TEXT
+         );
+         CREATE TABLE IF NOT EXISTS magpie_request_tiers (
+           response_id TEXT PRIMARY KEY,
+           started_ms INTEGER NOT NULL,
+           tier TEXT NOT NULL,
+           returned INTEGER NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )
     .map_err(|e| e.to_string())?;
@@ -62,13 +90,12 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap_or(0);
-    if version != SCHEMA_VERSION {
+    if version < 4 {
         // Forget scan state (forcing a full re-parse) but keep entries.
-        conn.execute_batch(&format!(
+        conn.execute_batch(
             "DROP TABLE IF EXISTS scanned_files;
-             DELETE FROM meta WHERE key = 'pricing_fingerprint';
-             PRAGMA user_version = {SCHEMA_VERSION};"
-        ))
+             DELETE FROM meta WHERE key = 'pricing_fingerprint';",
+        )
         .map_err(|e| e.to_string())?;
     }
     conn.execute_batch(
@@ -85,6 +112,34 @@ pub fn open(db_path: &Path) -> Result<Connection, String> {
          );",
     )
     .map_err(|e| e.to_string())?;
+    if version < SCHEMA_VERSION {
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        // The old Codex identity included a guessed -fast suffix. Keep the
+        // estimate on the entry, and use the raw model in its identity so
+        // reclassifying the request or moving its log cannot count it twice.
+        tx.execute_batch(
+            "DELETE FROM entries WHERE id IN (
+               SELECT old.id FROM entries old JOIN entries base
+                 ON base.dedup_key = replace(old.dedup_key, ':' || old.model || ':',
+                   ':' || substr(old.model, 1, length(old.model) - 5) || ':')
+                AND base.id <> old.id
+               WHERE old.agent = 'codex' AND old.model LIKE '%-fast'
+                 AND old.dedup_key LIKE 'codex:%'
+             );
+             UPDATE entries SET dedup_key = replace(dedup_key, ':' || model || ':',
+               ':' || substr(model, 1, length(model) - 5) || ':')
+             WHERE agent = 'codex' AND model LIKE '%-fast' AND dedup_key LIKE 'codex:%';",
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE scanned_files SET mtime_ms = ?1 WHERE agent IN (?2, ?3)",
+            params![METADATA_BACKFILL_MTIME, adapters::codex::AGENT, adapters::magpie::SOURCE],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     Ok(conn)
 }
 
@@ -210,6 +265,8 @@ struct Parsed<'a> {
     /// Replace the file's rows (full parse) or add to them (append).
     full: bool,
     records: Vec<(UsageRecord, f64)>,
+    performance: Vec<PerformanceSample>,
+    request_pricing: Vec<RequestPricing>,
     parsed_bytes: i64,
     tail_hash: Option<i64>,
     state: Option<String>,
@@ -320,12 +377,30 @@ pub fn scan_all(
         let tx = guard.transaction().map_err(|e| e.to_string())?;
         for p in &batch {
             if p.full {
+                if p.fm.adapter.agent == adapters::codex::AGENT {
+                    tx.execute(
+                        "DELETE FROM codex_responses WHERE usage_key IN
+                         (SELECT dedup_key FROM entries WHERE file_path = ?1)",
+                        params![p.fm.path],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
                 tx.execute("DELETE FROM entries WHERE file_path = ?1", params![p.fm.path])
                     .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "DELETE FROM performance_samples WHERE file_path = ?1",
+                    params![p.fm.path],
+                )
+                .map_err(|e| e.to_string())?;
             }
             for (rec, cost) in &p.records {
                 stats.entries_inserted += insert_record(&tx, &p.fm.path, rec, *cost)?;
             }
+            if !p.performance.is_empty() {
+                insert_performance(&tx, p.fm.adapter.agent, &p.fm.path, &p.performance)
+                    .map_err(|e| e.to_string())?;
+            }
+            save_request_pricing(&tx, &p.request_pricing).map_err(|e| e.to_string())?;
             tx.execute(
                 "INSERT INTO scanned_files (path, agent, mtime_ms, size, parsed_bytes, tail_hash, state)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -348,6 +423,7 @@ pub fn scan_all(
         stats.files_parsed += batch.len();
     }
 
+    stats.entries_repriced += apply_request_pricing(conn, pricing).map_err(|e| e.to_string())?;
     stats.duration_ms = started.elapsed().as_millis();
     Ok(stats)
 }
@@ -357,8 +433,8 @@ pub fn scan_all(
 /// unchanged, otherwise in full. Adapter panics are contained so one
 /// malformed file cannot take the scanner down.
 fn parse_one<'a>(fm: &'a FileMeta, known: Option<Known>, pricing: &PricingMap) -> Option<Parsed<'a>> {
-    let resume = match (fm.adapter.parse_append, known) {
-        (Some(_), Some(k))
+    let resume = match (&fm.adapter.parser, known) {
+        (Parser::Append(_), Some(k))
             if k.parsed_bytes > 0
                 && fm.size >= k.parsed_bytes
                 && k.tail_hash.is_some()
@@ -370,20 +446,25 @@ fn parse_one<'a>(fm: &'a FileMeta, known: Option<Known>, pricing: &PricingMap) -
     };
     let full = resume.is_none();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        match fm.adapter.parse_append {
-            Some(parse_append) => {
+        match fm.adapter.parser {
+            Parser::Append(parse_append) => {
                 let (offset, state) = resume
                     .as_ref()
                     .map(|k| (k.parsed_bytes as u64, k.state.as_deref()))
                     .unwrap_or((0, None));
-                let out = parse_append(&fm.file, offset, state);
+                let backfill = resume.as_ref().is_some_and(|k| k.mtime_ms == METADATA_BACKFILL_MTIME);
+                let out = match (backfill, fm.adapter.agent) {
+                    (true, adapters::codex::AGENT) => adapters::codex::backfill_metadata(&fm.file, offset),
+                    (true, adapters::magpie::SOURCE) => parse_append(&fm.file, 0, None),
+                    _ => parse_append(&fm.file, offset, state),
+                };
                 let tail = jsonl::tail_hash(&fm.file, out.offset);
-                (out.records, out.offset as i64, tail, out.state)
+                (out.records, out.performance, out.request_pricing, out.offset as i64, tail, out.state)
             }
-            None => ((fm.adapter.parse_file)(&fm.file), fm.size, None, None),
+            Parser::File(parse_file) => (parse_file(&fm.file), Vec::new(), Vec::new(), fm.size, None, None),
         }
     }));
-    let Ok((records, parsed_bytes, tail_hash, state)) = outcome else {
+    let Ok((records, performance, request_pricing, parsed_bytes, tail_hash, state)) = outcome else {
         eprintln!("tokbar: parser panicked on {}", fm.path);
         return None;
     };
@@ -400,10 +481,118 @@ fn parse_one<'a>(fm: &'a FileMeta, known: Option<Known>, pricing: &PricingMap) -
         fm,
         full,
         records,
+        performance,
+        request_pricing,
         parsed_bytes,
         tail_hash,
         state,
     })
+}
+
+fn save_request_pricing(tx: &rusqlite::Transaction, evidence: &[RequestPricing]) -> rusqlite::Result<()> {
+    for item in evidence {
+        match item {
+            RequestPricing::CodexResponse { usage_key, response_id } => {
+                tx.prepare_cached(
+                    "INSERT OR IGNORE INTO codex_responses (usage_key, response_id) VALUES (?1, ?2)",
+                )?
+                .execute(params![usage_key, response_id])?;
+            }
+            RequestPricing::MagpieTier { response_id, started_ms, tier, returned } => {
+                tx.prepare_cached(
+                    "INSERT INTO magpie_request_tiers (response_id, started_ms, tier, returned)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(response_id) DO UPDATE SET
+                       tier = excluded.tier, returned = excluded.returned
+                     WHERE excluded.returned > magpie_request_tiers.returned",
+                )?
+                .execute(params![response_id, started_ms, tier.as_str(), returned])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Codex and gateway logs can arrive in either order. Only exact response IDs
+/// change an entry's price, and each entry remains tied to its original usage.
+fn apply_request_pricing(conn: &Mutex<Connection>, pricing: &PricingMap) -> rusqlite::Result<usize> {
+    let pending = {
+        let guard = lock(conn);
+        let mut stmt = guard.prepare_cached(
+            "SELECT e.id, r.usage_key, e.model, g.tier, g.started_ms,
+                        e.input_tokens, e.output_tokens, e.cache_creation_5m,
+                        e.cache_creation_1h, e.cache_read_tokens
+                 FROM codex_responses r
+                 JOIN magpie_request_tiers g ON g.response_id = r.response_id
+                 JOIN entries e ON e.dedup_key = r.usage_key AND e.agent = 'codex'
+                 WHERE r.applied_entry_id IS NOT e.id OR r.applied_tier IS NOT g.tier",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                TokenCounts {
+                    input: r.get::<_, i64>(5)? as u64,
+                    output: r.get::<_, i64>(6)? as u64,
+                    cache_write_5m: r.get::<_, i64>(7)? as u64,
+                    cache_write_1h: r.get::<_, i64>(8)? as u64,
+                    cache_read: r.get::<_, i64>(9)? as u64,
+                },
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut changed = 0;
+    for chunk in pending.chunks(5_000) {
+        let mut guard = lock(conn);
+        let tx = guard.transaction()?;
+        for (entry_id, key, model, tier, started, tokens) in chunk {
+            let Some(tier) = ServiceTier::parse(tier) else { continue };
+            let model = tier.label(model);
+            let cost = pricing.resolve_at(&model, *started)
+                .map_or(0.0, |rates| calculate_cost(*tokens, &rates));
+            changed += tx.prepare_cached(
+                "UPDATE entries SET model = ?2, calculated_cost = ?3
+                 WHERE id = ?1 AND (model IS NOT ?2 OR calculated_cost IS NOT ?3)",
+            )?.execute(params![entry_id, model, cost])?;
+            tx.prepare_cached(
+                "UPDATE codex_responses SET applied_entry_id = ?2, applied_tier = ?3
+                 WHERE usage_key = ?1",
+            )?.execute(params![key, entry_id, tier.as_str()])?;
+        }
+        tx.commit()?;
+    }
+    Ok(changed)
+}
+
+fn insert_performance(
+    tx: &rusqlite::Transaction,
+    source: &str,
+    file_path: &str,
+    samples: &[PerformanceSample],
+) -> rusqlite::Result<()> {
+    let mut stmt = tx.prepare_cached(
+        "INSERT INTO performance_samples
+           (source, sample_key, file_path, timestamp_ms, model, provider, output_tps, first_token_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(source, sample_key) DO NOTHING",
+    )?;
+    for sample in samples {
+        stmt.execute(params![
+            source,
+            sample.key,
+            file_path,
+            sample.timestamp_ms,
+            sample.model,
+            sample.provider,
+            sample.output_tps,
+            sample.first_token_ms,
+        ])?;
+    }
+    Ok(())
 }
 
 fn insert_record(
@@ -497,8 +686,11 @@ pub fn reprice_if_needed(conn: &Mutex<Connection>, pricing: &PricingMap) -> Resu
         }
         let mut stmt = guard
             .prepare(
-                "SELECT id, model, timestamp_ms, input_tokens, output_tokens, cache_creation_5m,
-                        cache_creation_1h, cache_read_tokens, calculated_cost FROM entries",
+                "SELECT e.id, e.model, COALESCE(g.started_ms, e.timestamp_ms), e.input_tokens,
+                        e.output_tokens, e.cache_creation_5m, e.cache_creation_1h, e.cache_read_tokens,
+                        e.calculated_cost FROM entries e
+                 LEFT JOIN codex_responses r ON r.usage_key = e.dedup_key AND r.applied_entry_id = e.id
+                 LEFT JOIN magpie_request_tiers g ON g.response_id = r.response_id",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -635,19 +827,135 @@ mod tests {
     }
 
     #[test]
-    fn reprices_stored_entries_when_prices_change() {
-        let conn = Mutex::new(Connection::open_in_memory().unwrap());
+    fn codex_reprices_a_legacy_entry_when_the_gateway_returns_a_different_tier() {
+        let dir = adapters::util::test_dir("codex-request-pricing");
+        let path = dir.join("usage.db");
+        let codex = dir.join("session.jsonl");
+        std::fs::write(&codex, concat!(
+            r#"{"type":"turn_context","payload":{"model":"gpt-6.2-sol"}}"#, "\n",
+            r#"{"type":"token_usage_record","payload":{"response_id":"resp_1","usage":{"input_tokens":1000,"cached_input_tokens":250,"output_tokens":120}}}"#, "\n",
+            r#"{"timestamp":"2026-11-25T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":250,"output_tokens":120}}}}"#, "\n",
+        )).unwrap();
+        let parsed = adapters::codex::parse_append(&codex, 0, None);
+        let mut old = parsed.records[0].clone();
+        old.model.push_str("-fast");
+        old.dedup_key = old.dedup_key.map(|key| key.replace(":gpt-6.2-sol:", ":gpt-6.2-sol-fast:"));
         {
-            let mut g = lock(&conn);
-            g.execute_batch(
-                "CREATE TABLE entries (id INTEGER PRIMARY KEY, dedup_key TEXT UNIQUE,
-                   file_path TEXT, agent TEXT, project TEXT, session_id TEXT, timestamp_ms INTEGER,
-                   date_local TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER,
-                   cache_creation_5m INTEGER, cache_creation_1h INTEGER, cache_read_tokens INTEGER,
-                   total_tokens INTEGER, cost_usd REAL, calculated_cost REAL NOT NULL);
-                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+            let mut conn = open(&path).unwrap();
+            let tx = conn.transaction().unwrap();
+            insert_record(&tx, "session.jsonl", &old, 0.00545).unwrap();
+            tx.pragma_update(None, "user_version", 5).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let conn = Mutex::new(open(&path).unwrap());
+        let prices = PricingMap::load(None);
+        let gateway = dir.join("magpie.jsonl");
+        let sent = r#"{"t":"2026-11-25T00:00:00Z","agent":"codex","status":200,"response_id":"resp_1","tier_sent":"ultrafast"}"#;
+        let returned = r#"{"t":"2026-11-25T00:00:00Z","agent":"codex","status":200,"response_id":"resp_1","tier_sent":"ultrafast","tier_served":"default"}"#;
+        std::fs::write(&gateway, format!("{sent}\n")).unwrap();
+        let first = adapters::magpie::parse_append(&gateway, 0, None);
+        let save = |rows: &[RequestPricing]| {
+            let mut guard = lock(&conn);
+            let tx = guard.transaction().unwrap();
+            save_request_pricing(&tx, rows).unwrap();
+            tx.commit().unwrap();
+        };
+        save(&first.request_pricing);
+        assert_eq!(apply_request_pricing(&conn, &prices).unwrap(), 0);
+        save(&parsed.request_pricing);
+        assert_eq!(apply_request_pricing(&conn, &prices).unwrap(), 1);
+        let overview = || crate::aggregate::overview(&lock(&conn), None, None, crate::cost::CostMode::Calculate).unwrap();
+        let before = overview();
+        assert_eq!(before.totals.requests, 1);
+        assert_eq!(before.codex_pricing.sent, 1);
+        assert!((before.totals.cost - 0.008175).abs() < 1e-12);
+
+        std::fs::write(&gateway, format!("{sent}\n{returned}\n{sent}\n")).unwrap();
+        let update = adapters::magpie::parse_append(&gateway, first.offset, None);
+        save(&update.request_pricing);
+        assert_eq!(apply_request_pricing(&conn, &prices).unwrap(), 1);
+        assert_eq!(apply_request_pricing(&conn, &prices).unwrap(), 0);
+        let after = overview();
+        assert_eq!(after.totals.requests, 1);
+        assert_eq!(after.codex_pricing.returned, 1);
+        assert!((after.totals.cost - 0.002725).abs() < 1e-12);
+    }
+
+    #[test]
+    fn performance_backfill_keeps_usage_and_groups_distinct_samples() {
+        let path = adapters::util::test_dir("performance-migration").join("usage.db");
+        {
+            let mut old = open(&path).unwrap();
+            let tx = old.transaction().unwrap();
+            insert_record(&tx, "archived.jsonl", &record("old", "model-a", 150), 1.5).unwrap();
+            tx.execute_batch(
+                "DROP TABLE performance_samples;
+                 PRAGMA user_version = 4;
+                 INSERT INTO scanned_files (path, agent, mtime_ms, size, parsed_bytes)
+                 VALUES ('session.jsonl', 'codex', 1, 100, 90),
+                        ('claude.jsonl', 'claude-code', 2, 200, 180);",
             )
             .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let mut conn = open(&path).unwrap();
+        for (agent, expected) in [("codex", (METADATA_BACKFILL_MTIME, 90)), ("claude-code", (2, 180))] {
+            let stamp: (i64, i64) = conn
+                .query_row(
+                    "SELECT mtime_ms, parsed_bytes FROM scanned_files WHERE agent = ?1",
+                    [agent],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(stamp, expected);
+        }
+        let sample = |key: &str, timestamp_ms, output_tps, first_token_ms| PerformanceSample {
+            key: key.to_string(),
+            timestamp_ms,
+            model: "model-a".to_string(),
+            provider: "provider-a".to_string(),
+            output_tps,
+            first_token_ms,
+        };
+        let tx = conn.transaction().unwrap();
+        let samples = [
+            sample("one", 1000, Some(30.0), Some(300)),
+            sample("two", 2000, Some(50.0), Some(900)),
+            sample("three", 3000, None, Some(1000)),
+        ];
+        insert_performance(&tx, "magpie", "usage.jsonl", &samples).unwrap();
+        insert_performance(&tx, "magpie", "usage.jsonl", &samples).unwrap();
+        insert_performance(&tx, "codex", "session.jsonl", &samples[..1]).unwrap();
+        tx.commit().unwrap();
+
+        let groups = crate::performance::models(&conn, Some(1000), Some(3000)).unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].source, "magpie");
+        assert_eq!(groups[0].output_tps, Some(40.0));
+        assert_eq!(groups[0].first_token_ms, Some(600.0));
+        assert_eq!(
+            (groups[0].output_samples, groups[0].first_token_samples),
+            (2, 2)
+        );
+        assert_eq!(groups[1].output_samples, 1);
+        assert_eq!(
+            crate::performance::latest(&conn).unwrap().unwrap().timestamp_ms,
+            2000
+        );
+
+        let usage =
+            crate::aggregate::overview(&conn, None, None, crate::cost::CostMode::Auto).unwrap();
+        assert_eq!((usage.totals.requests, usage.totals.total_tokens), (1, 150));
+        assert_eq!(usage.totals.cost, 1.5);
+    }
+
+    #[test]
+    fn reprices_stored_entries_when_prices_change() {
+        let conn = Mutex::new(open(Path::new(":memory:")).unwrap());
+        {
+            let mut g = lock(&conn);
             let tx = g.transaction().unwrap();
             // Stored at $0 as if the model had been unpriced at scan time.
             insert_record(&tx, "f", &record("k1", "claude-opus-5-5", 1_000_000), 0.0).unwrap();
